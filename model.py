@@ -30,7 +30,7 @@ class SkipThoughts(nn.Module):
                                        padding_idx=pad_idx)
         self.W_i = nn.Linear(word_dim, hidden_dim)
         self.W_o = nn.Linear(self.cell_hidden_size * self.n_directions,
-                             vocab_size)
+                             word_dim)
 
         self.encoder = nn.GRU(input_size=hidden_dim,
                               hidden_size=self.cell_hidden_size,
@@ -108,7 +108,10 @@ class SkipThoughts(nn.Module):
         hs = [torch.cat([h, Variable(h.data.new(batch_size, seq_len - h.size(1), h.size(2)).zero_())], 1) if seq_len > h.size(1) else h for h in hs]
         hs = [h.unsqueeze(0) for h in hs]
         h = torch.cat(hs, 0)
-        logits = self.W_o(h.view(-1, self.n_directions * self.cell_hidden_size))
+        h = self.W_o(h.view(-1, self.n_directions * self.cell_hidden_size))
+
+        W_e = self.embeddings.weight
+        logits = torch.mm(h, W_e.t())
         logits = logits.view(n_decoders, batch_size, seq_len, self.vocab_size)
 
         return logits

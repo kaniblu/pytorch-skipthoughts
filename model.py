@@ -7,27 +7,30 @@ from torch.autograd import Variable
 
 
 class SkipThoughts(nn.Module):
-    def __init__(self, vocab_size, word_dim, hidden_dim, n_layers, n_decoders,
-                 bidirectional=True,
-                 dropout_prob=0.0, pad_idx=0, bos_idx=1, eos_idx=2):
+    def __init__(self, vocab, word_dim, hidden_dim, n_layers, n_decoders,
+                 bidirectional=True, batch_first=True, dropout_prob=0.0,
+                 rnn_cell="gru"):
         super(SkipThoughts, self).__init__()
 
-        self.vocab_size = vocab_size
+        self.vocab = vocab
+        self.vocab_size = vocab_size = len(vocab)
         self.word_dim = word_dim
         self.hidden_dim = hidden_dim
 
+        self.rnn_cell = rnn_cell
+        self.batch_first = batch_first
         self.bidirectional = bidirectional
         self.dropout_prob = dropout_prob
         self.n_layers = n_layers
         self.n_decoders = n_decoders
-        self.bos_idx = bos_idx
-        self.eos_idx = eos_idx
-        self.pad_idx = pad_idx
+        self.bos_idx = vocab[vocab.bos]
+        self.eos_idx = vocab[vocab.eos]
+        self.pad_idx = vocab[vocab.pad]
         self.n_directions = 2 if bidirectional else 1
         self.cell_hidden_size = hidden_dim // self.n_directions // n_layers
 
         self.embeddings = nn.Embedding(vocab_size, word_dim,
-                                       padding_idx=pad_idx)
+                                       padding_idx=self.pad_idx)
         self.W_i = nn.Linear(word_dim, hidden_dim)
         self.W_o = nn.Linear(self.cell_hidden_size * self.n_directions,
                              word_dim)
@@ -63,6 +66,38 @@ class SkipThoughts(nn.Module):
     def encode_tv(self, x, x_lens):
         return self._encode(x, x_lens)
 
+    def _run_rnn_packed(self, cell, x, x_lens, h=None):
+        x_lens, x_idx = torch.sort(x_lens, 0, descending=True)
+        _, x_ridx = torch.sort(x_idx)
+
+        x = torch.index_select(x, 0, x_idx)
+        x_packed = R.pack_padded_sequence(x, x_lens.data.cpu().tolist(),
+                                          batch_first=self.batch_first)
+
+        if h is not None:
+            h = torch.index_select(h, 1, x_idx)
+            output, ch = cell(x_packed, h)
+        else:
+            output, ch = cell(x_packed)
+
+        if self.rnn_cell == "lstm":
+            h, c = ch
+            h = torch.index_select(h, 1, x_ridx)
+            c = torch.index_select(c, 1, x_ridx)
+
+            ch = h, c
+        elif self.rnn_cell == "gru":
+            ch = torch.index_select(ch, 1, x_ridx)
+
+        output, _ = R.pad_packed_sequence(output, batch_first=self.batch_first)
+
+        if self.batch_first:
+            output = torch.index_select(output, 0, x_ridx)
+        else:
+            output = torch.index_select(output, 1, x_ridx)
+
+        return output, ch
+
     def _encode(self, x, x_lens):
         batch_size, seq_len = x.size()
 
@@ -71,14 +106,12 @@ class SkipThoughts(nn.Module):
         x = F.tanh(self.W_i(x))
         x_enc = x.view(-1, seq_len, self.hidden_dim)
 
-        x_packed = R.pack_padded_sequence(x_enc, x_lens, batch_first=True)
-
-        _, h_n = self.encoder(x_packed)
+        _, h_n = self._run_rnn_packed(self.encoder, x_enc, x_lens)
         h_n = h_n.transpose(1, 0).contiguous().view(-1, self.hidden_dim)
 
         return h_n
 
-    def _decode(self, h, xs, xs_lens, xs_idx):
+    def _decode(self, h, xs, xs_lens):
         """Decode
         
         Args:
@@ -89,8 +122,7 @@ class SkipThoughts(nn.Module):
 
         h_0 = h.view(-1, self.n_layers * self.n_directions,
                      self.cell_hidden_size)
-        hs_0 = [torch.index_select(h_0, 0, idx) for idx in xs_idx]
-        hs_0 = [h_0.transpose(1, 0).contiguous() for h_0 in hs_0]
+        h_0 = h_0.transpose(1, 0).contiguous()
 
         xs = xs.view(-1, seq_len)
         xs = self.embeddings(xs)
@@ -99,26 +131,24 @@ class SkipThoughts(nn.Module):
         xs = xs.view(self.n_decoders, batch_size, seq_len, self.hidden_dim)
         xs = [x.squeeze(0) for x in torch.split(xs, 1)]
 
-        packed_xs = [R.pack_padded_sequence(x, x_lens, batch_first=True)
-                     for x, x_lens in zip(xs, xs_lens)]
+        decoders = [getattr(self, "decoder{}".format(i))
+                    for i in range(self.n_decoders)]
+        hs = [self._run_rnn_packed(decoder, x, x_lens, h_0)[0]
+              for decoder, x, x_lens in zip(decoders, xs, xs_lens)]
+        seq_lens = [h.size(1) for h in hs]
+        hs = [self.W_o(h.view(-1, self.n_directions * self.cell_hidden_size))
+              for h in hs]
 
-        hs = [getattr(self, "decoder{}".format(i))(packed_x, h_0)[0] for i, (packed_x, h_0) in
-              enumerate(zip(packed_xs, hs_0))]
-        hs = [R.pad_packed_sequence(h, batch_first=True)[0] for h in hs]
-        hs = [torch.cat([h, Variable(h.data.new(batch_size, seq_len - h.size(1), h.size(2)).zero_())], 1) if seq_len > h.size(1) else h for h in hs]
-        hs = [h.unsqueeze(0) for h in hs]
-        h = torch.cat(hs, 0)
-        h = self.W_o(h.view(-1, self.n_directions * self.cell_hidden_size))
-
-        W_e = self.embeddings.weight
-        logits = torch.mm(h, W_e.t())
-        logits = logits.view(n_decoders, batch_size, seq_len, self.vocab_size)
+        W_e = self.embeddings.weight.t()
+        logits = [torch.mm(h, W_e) for h in hs]
+        logits = [logit.view(batch_size, seq_len, self.vocab_size)
+                  for logit, seq_len in zip(logits, seq_lens)]
 
         return logits
 
-    def forward(self, x, x_lens, ys, ys_lens, ys_idx):
+    def forward(self, x, x_lens, ys, ys_lens):
         h = self._encode(x, x_lens)
-        logits = self._decode(h, ys, ys_lens, ys_idx)
+        logits = self._decode(h, ys, ys_lens)
 
         return logits, h
 

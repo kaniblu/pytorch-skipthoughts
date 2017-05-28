@@ -66,60 +66,125 @@ def load_word_embeddings(model, vocab, path):
             model.embeddings.weight.data[idx] = (torch.FloatTensor(values))
 
 
-def calculate_loss(model, x, x_lens, ys, ys_lens, ys_idx, gpu=True):
-    """inputs must be sorted"""
-    x = Variable(x)
-    x_lens = x_lens.tolist()
-    ys_i = Variable(ys[..., :-1]).contiguous()
-    ys_t = Variable(ys[..., 1:]).contiguous()
-    ys_lens_var = Variable(ys_lens - 1)
-    ys_lens = ys_lens_var.data.tolist()
-    ys_idx = Variable(ys_idx)
+def forward(model, x, x_lens, ys, ys_lens, gpu=True, volatile=False):
+    x = Variable(x, volatile=volatile)
+    x_lens = Variable(x_lens, volatile=volatile)
+    ys_i = Variable(ys[..., :-1], volatile=volatile).contiguous()
+    ys_t = Variable(ys[..., 1:], volatile=volatile).contiguous()
+    ys_lens = Variable(ys_lens - 1, volatile=volatile)
 
     if gpu:
         x = x.cuda(async=True)
+        x_lens = x_lens.cuda(async=True)
         ys_i = ys_i.cuda(async=True)
         ys_t = ys_t.cuda(async=True)
-        ys_lens_var = ys_lens_var.cuda(async=True)
-        ys_idx = ys_idx.cuda(async=True)
+        ys_lens = ys_lens.cuda(async=True)
 
     model.zero_grad()
-    logits, tv = model(x, x_lens, ys_i, ys_lens, ys_idx)
-    dec_losses = [compute_loss(y, y_t, y_lens)
-                  for y, y_t, y_lens in zip(logits, ys_t, ys_lens_var)]
+    logits, tv = model(x, x_lens, ys_i, ys_lens)
 
-    return logits, dec_losses
+    # Clip target seq_len by output length
+    ys_t = [y_t[:, :y.size(1)].contiguous() for y, y_t in zip(logits, ys_t)]
+
+    decoder_losses = [compute_loss(y, y_t, y_lens)
+                  for y, y_t, y_lens in zip(logits, ys_t, ys_lens)]
+
+    del x, x_lens, ys_i, ys_t, ys_lens
+
+    return logits, decoder_losses
+
+
+def viz_val_text(inp_sent, out_sents, tar_sents):
+    assert len(out_sents) == len(tar_sents)
+
+    decoder_str = "\n".join(
+        "Decoder#{0} Output:\t{1}\nDecoder#{0} Target:\t{2}".format(
+            i + 1, out_sent, tar_sent
+        ) for i, (out_sent, tar_sent) in enumerate(zip(out_sents, tar_sents))
+    )
+    encoder_str = "Encoder   Input:\t{}".format(inp_sent)
+    str = encoder_str + "\n" + decoder_str
+
+    return str
+
+
+def to_sent(data, length, vocab):
+    return " ".join(vocab[data[i]] for i in range(length))
 
 
 def train(model, data_loader_fn, n_epochs, viz, save_dir, save_period,
-          val_period, vocab):
+          val_period):
     model = model.cuda()
+    vocab = model.vocab
     model.reset_parameters()
     optimizer = O.Adam(model.parameters())
 
     step = 0
 
-    legend = ["Average"] + ["Decoder_{}".format(i) for i in range(model.n_decoders)]
+    legend = ["Average"] + ["Decoder_{}".format(i) for i in
+                            range(model.n_decoders)]
 
     for eid in range(n_epochs):
         data_loader = iter(data_loader_fn())
 
-        while True:
-            try:
-                x, x_lens, ys, ys_lens = next(data_loader)
-            except StopIteration:
-                break
-
+        for x, x_lens, ys, ys_lens in data_loader:
             step += 1
 
-            x_lens, x_idx = torch.sort(x_lens, dim=0, descending=True)
-            x = x[x_idx]
+            if step % val_period == 0:
+                logits, dec_losses = forward(model, x, x_lens, ys, ys_lens,
+                                             volatile=True)
+                loss_vals = [loss.data[0] for loss in declosses]
+                total_loss = sum(declosses)
+                total_loss_val = total_loss.data[0]
 
-            ys_lens, ys_idx = torch.sort(ys_lens, dim=1, descending=True)
-            for i in range(ys.size(0)):
-                ys[i] = ys[i][ys_idx[i]]
+                plot_X = [step] * (model.n_decoders + 1)
+                plot_Y = [total_loss_val] + loss_vals
 
-            _, declosses = calculate_loss(model, x, x_lens, ys, ys_lens, ys_idx)
+                viz.plot(
+                    X=[plot_X],
+                    Y=[plot_Y],
+                    opts=dict(
+                        legend=legend,
+                        title="Training Loss"
+                    )
+                )
+
+                try:
+                    inputs = x[:10]
+                    input_lens = x_lens[:10]
+                    targets = ys[:, :10, 1:].transpose(1, 0)
+                    target_lens = (ys_lens.transpose(1, 0) - 1)
+                    logits = torch.cat([logit[:10].unsqueeze(0) for logit in logits], 0)
+                    preds = logits.transpose(1, 0).max(3)[1].squeeze().data.cpu()
+
+                    inp_sents = [to_sent(x_, l, vocab)
+                                 for x_, l in zip(inputs, input_lens)]
+                    tar_sents = [[to_sent(y_, l, vocab) for y_, l in zip(y, y_lens)]
+                                 for y, y_lens in zip(targets, target_lens)]
+                    out_sents = [[to_sent(y_, l, vocab) for y_, l in zip(y, y_lens)]
+                                 for y, y_lens in zip(preds, target_lens)]
+
+                    title = "Iter #{}".format(step)
+                    body = "\n".join(
+                        "({})\n{}".format(i + 1, viz_val_text(inp, out, tar))
+                        for i, (inp, tar, out) in enumerate(zip(inp_sents, tar_sents, out_sents))
+                    )
+
+                    print(title)
+                    print(body)
+
+                    viz.code(
+                        text=title + "\n" + body,
+                        opts=dict(
+                            title="Validation Check"
+                        )
+                    )
+                except:
+                    pass
+
+                continue
+
+            _, declosses = forward(model, x, x_lens, ys, ys_lens)
             decloss_vals = [loss.data[0] for loss in declosses]
             loss = sum(declosses) / model.n_decoders
             loss_val = loss.data[0]
@@ -142,70 +207,6 @@ def train(model, data_loader_fn, n_epochs, viz, save_dir, save_period,
             if step % 10 == 0:
                 print("[{}]: loss={}".format(step, loss_val))
 
-            if step % val_period == 0:
-                try:
-                    x, x_lens, ys, ys_lens = next(data_loader)
-                except StopIteration:
-                    break
-
-                x_lens, x_idx = torch.sort(x_lens, dim=0, descending=True)
-                x = x[x_idx]
-
-                ys_lens, ys_idx = torch.sort(ys_lens, dim=1, descending=True)
-                for i in range(ys.size(0)):
-                    ys[i] = ys[i][ys_idx[i]]
-
-                logits, declosses = calculate_loss(model, x, x_lens, ys, ys_lens, ys_idx)
-                loss_vals = [loss.data[0] for loss in declosses]
-                total_loss = sum(declosses)
-                total_loss_val = total_loss.data[0]
-
-                plot_X = [step] * (model.n_decoders + 1)
-                plot_Y = [total_loss_val] + loss_vals
-
-                viz.plot(
-                    X=[plot_X],
-                    Y=[plot_Y],
-                    opts=dict(
-                        legend=legend,
-                        title="Training Loss"
-                    )
-                )
-
-                x = x[:10]
-                ys = ys[:, :10, 1:].transpose(1, 0)
-                ys_lens = ys_lens.transpose(1, 0)
-
-                preds = logits[:, :10].transpose(1, 0).max(3)[1].squeeze()
-                x_sents = [" ".join(vocab[int(e[i])] for i in range(l)) for e, l
-                           in zip(x, x_lens)]
-                t_sents = [[" ".join(vocab[int(e[i])] for i in range(l)) for e, l
-                           in zip(y, y_lens)] for y, y_lens in zip(ys, ys_lens - 1)]
-                p_sents = [[
-                    " ".join(vocab[int(e[i].data[0])] for i in range(l - 1)) for
-                    e, l in zip(pred, y_lens)] for pred, y_lens in zip(preds, ys_lens - 1)]
-
-                title = "Iter #{}".format(step)
-                body = "\n".join(
-                    "({})\nEncoder   Input:\t{}\n{}".format(
-                        i + 1, x_sent, "\n".join(
-                            "Decoder#{0} Output:\t{1}\nDecoder#{0} Target:\t{2}".format(
-                                i + 1, p, t
-                            ) for i, (t, p) in enumerate(zip(t_sent, p_sent))
-                        )
-                    ) for i, (x_sent, t_sent, p_sent) in
-                    enumerate(zip(x_sents, t_sents, p_sents)))
-
-                print(title)
-                print(body)
-
-                viz.code(
-                    text=title + "\n" + body,
-                    opts=dict(
-                        title="Validation Check"
-                    )
-                )
-
             if step % save_period == 0:
                 model_filename = "model-{}-{:.4f}".format(step, loss_val)
                 path = os.path.join(save_dir, model_filename)
@@ -214,57 +215,61 @@ def train(model, data_loader_fn, n_epochs, viz, save_dir, save_period,
 
 
 def main():
-    a = parse_args()
-    n_decoders = a.n_before + a.n_after + (1 if a.predict_self else 0)
+    args = parse_args()
+    n_decoders = args.n_before + args.n_after + (1 if args.predict_self else 0)
 
-    assert os.path.exists(a.vocab_path)
+    assert os.path.exists(args.vocab_path)
 
     print("Loading vocabulary...")
-    with open(a.vocab_path, "rb") as f:
+    with open(args.vocab_path, "rb") as f:
         vocab = pickle.load(f)
 
     dt = datetime.datetime.now()
-    save_basename = dt.strftime("%Y%m%d") + "-{}".format(a.name)
-    save_dir = os.path.join(a.save_dir, save_basename)
+    save_basename = dt.strftime("%Y%m%d") + "-{}".format(args.name)
+    save_dir = os.path.join(args.save_dir, save_basename)
 
     if not os.path.exists(save_dir):
         os.makedirs(save_dir, exist_ok=True)
 
     print("Initializing model...")
     model_cls = SkipThoughts
-    model = model_cls(len(vocab), a.word_dim, a.hidden_dim,
+    model = model_cls(vocab, args.word_dim, args.hidden_dim,
                       n_decoders=n_decoders,
-                     n_layers=a.n_layers,
-                     bidirectional=a.bidirectional,
-                     dropout_prob=a.dropout_prob,
-                     pad_idx=vocab[vocab.pad],
-                     bos_idx=vocab[vocab.bos],
-                     eos_idx=vocab[vocab.eos])
+                      n_layers=args.n_layers,
+                      bidirectional=args.bidirectional,
+                      dropout_prob=args.dropout_prob,
+                      batch_first=True)
 
-    if a.word_embeddings_path is not None:
+    if args.word_embeddings_path is not None:
         print("Loading word embeddings...")
-        load_word_embeddings(model, vocab, a.word_embeddings_path)
+        load_word_embeddings(model, vocab, args.word_embeddings_path)
 
     env = os.path.basename(save_dir)
-    viz = Visdom(buffer_size=a.visdom_buffer_size, env=env)
+    viz = Visdom(buffer_size=args.visdom_buffer_size, env=env)
 
     viz.code(
-        text=str(a)[10:-1].replace(", ", "\n"),
+        text=str(args)[10:-1].replace(", ", "\n"),
         opts=dict(
             title="Arguments"
         )
     )
 
     def _data_loader_fn():
-        preprocessor = Preprocessor(vocab, a.omit_prob, a.swap_prob)
-        file_line_reader = TextFileReader(a.data_dir, shuffle_files=True)
-        return DataGenerator(file_line_reader, vocab, a.batch_size, a.max_len,
-                              preprocessor, n_before=a.n_before,
-                             n_after=a.n_after, predict_self=a.predict_self)
+        preprocessor = Preprocessor(vocab, args.omit_prob, args.swap_prob)
+        file_line_reader = TextFileReader(args.data_dir, shuffle_files=True)
+        return DataGenerator(file_line_reader, vocab, args.batch_size,
+                             max_length=args.max_len,
+                             preprocessor=preprocessor,
+                             n_before=args.n_before,
+                             n_after=args.n_after,
+                             predict_self=args.predict_self)
 
     print("Beginning training...")
-    train(model, _data_loader_fn, a.n_epochs, viz, save_dir, a.save_period,
-          a.val_period, vocab)
+    train(model, _data_loader_fn, args.n_epochs,
+          viz=viz,
+          save_dir=save_dir,
+          save_period=args.save_period,
+          val_period=args.val_period)
 
     print("Done!")
 

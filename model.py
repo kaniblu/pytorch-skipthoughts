@@ -107,7 +107,7 @@ class SkipThoughts(nn.Module):
         elif cell_type == "gru":
             return h
 
-    def encode_tv(self, x, x_lens):
+    def encode(self, x, x_lens):
         return self._encode(x, x_lens)
 
     def _run_rnn_packed(self, cell, x, x_lens, h=None):

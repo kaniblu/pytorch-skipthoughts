@@ -54,6 +54,10 @@ def parse_args():
     group.add("--visdom_buffer_size", type=int, default=10)
 
     group = parser.add_group("Model Parameters")
+    group.add("--encoder_cell", type=str, default="lstm",
+              choices=["lstm", "gru"])
+    group.add("--decoder_cell", type=str, default="gru",
+              choices=["lstm", "gru"])
     group.add("--n_before", type=int, default=1)
     group.add("--n_after", type=int, default=1)
     group.add("--predict_self", type=int, default=0)
@@ -150,9 +154,9 @@ def val_text(x_sents, yi_sents, yt_sents, o_sents):
         text += "Encoder    Input: {}\n".format(x_sent)
 
         for i, (si, st, so) in enumerate(zip(yi_sent, yt_sent, o_sent)):
-            text += "Decoder_{} Output: {}\n".format(i, so)
+            text += "Decoder_{} Input:  {}\n".format(i, si)
             text += "Decoder_{} Target: {}\n".format(i, st)
-            text += "Decoder_{}  Input: {}\n".format(i, si)
+            text += "Decoder_{} Output: {}\n".format(i, so)
 
     return text
 
@@ -307,6 +311,8 @@ def main():
     print("Initializing model...")
     model_cls = SkipThoughts
     model = model_cls(vocab, args.word_dim, args.hidden_dim,
+                      encoder_cell=args.encoder_cell,
+                      decoder_cell=args.decoder_cell,
                       n_decoders=n_decoders,
                       n_layers=args.n_layers,
                       bidirectional=args.bidirectional,

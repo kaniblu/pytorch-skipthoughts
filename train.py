@@ -38,6 +38,7 @@ def parse_args():
               choices=["glove", "fasttext", "none"])
     group.add("--wordembed_path", type=path, default=None)
     group.add("--fasttext_path", type=path, default=None)
+    group.add("--wordembed_freeze", action="store_true", default=False)
 
     group = parser.add_group("Training Options")
     group.add("--n_epochs", type=int, default=3)
@@ -337,6 +338,9 @@ def main():
 
     if args.gpu:
         model = model.cuda()
+
+    if args.wordembed_freeze:
+        model.embeddings.weight.requires_grad = False
 
     viz_pool = mp.ThreadPool(1, initializer=init_viz, initargs=(tuple(), dict(
         buffer_size=args.visdom_buffer_size,

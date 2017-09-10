@@ -1,29 +1,29 @@
+import datetime
+import multiprocessing.pool as mp
 import os
 import pickle
 import shutil
-import tempfile
-import datetime
 import subprocess
-import multiprocessing.pool as mp
+import tempfile
 
-import tqdm
 import torch
 import torch.optim as O
+import tqdm
+from torch.autograd import Variable
 from torch.nn.parallel import data_parallel
 from torch.nn.utils import clip_grad_norm
-from torch.autograd import Variable
-from yaap import ArgParser
-from yaap import path
 from torchtextutils import Vocabulary
-from torchtextutils import create_generator_st
+from torchtextutils import BatchPreprocessor
 from torchtextutils import DirectoryReader
 from torchtextutils import OmissionNoisifier
 from torchtextutils import SwapNoisifier
-from torchtextutils import BatchPreprocessor
+from torchtextutils import create_generator_st
 from visdom_pooled import Visdom
+from yaap import ArgParser
+from yaap import path
 
-from model import MultiContextSkipThoughts
-from model import compute_loss
+from .model import MultiContextSkipThoughts
+from .model import compute_loss
 
 
 def parse_args():
@@ -475,7 +475,7 @@ def file_list_reader(dir_or_paths, shuffle_files=False):
         if os.path.isfile(x):
             with open(x, "r") as f:
                 for line in f:
-                    yield line
+                    yield line.strip()
         else:
             reader = DirectoryReader(x, shuffle_files=shuffle_files)
             for line in reader:
@@ -573,7 +573,7 @@ def main():
         shuffle_files=True,
         batch_first=args.batch_first,
         pin_memory=True,
-        allow_residual=True
+        allow_residual=False
     )
 
     trainer = Trainer(
@@ -582,7 +582,7 @@ def main():
         data_generator=data_generator,
         n_epochs=args.epochs,
         viz_pool=viz_pool,
-        save_dir=args.save_dir,
+        save_dir=save_dir,
         save_period=args.save_period,
         val_period=args.val_period,
         previews=args.previews,

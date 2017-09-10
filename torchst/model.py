@@ -125,6 +125,7 @@ class MultiContextSkipThoughts(nn.Module):
         x_packed = R.pack_padded_sequence(x, x_lens,
                                           batch_first=self.batch_first)
 
+        cell.flatten_parameters()
         if h is not None:
             output, h = cell(x_packed, h)
         else:

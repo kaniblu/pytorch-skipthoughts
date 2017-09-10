@@ -8,7 +8,7 @@ from torch.autograd import Variable
 import torch.utils.data as tchdata
 import numpy as np
 
-from model import SkipThoughts
+from model import MultiContextSkipThoughts
 from utils import ensure_dir_exists
 from utils.vocab import Vocabulary
 from utils.argparser import ArgParser
@@ -107,7 +107,7 @@ def main():
         vocab = pickle.load(f)
 
     print("Loading model...")
-    model_cls = SkipThoughts
+    model_cls = MultiContextSkipThoughts
     model = model_cls(vocab, args.word_dim, args.hidden_dim,
                       encoder_cell=args.encoder_cell,
                       decoder_cell=args.decoder_cell,

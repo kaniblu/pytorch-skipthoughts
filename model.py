@@ -6,7 +6,17 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 
 
-class SkipThoughts(nn.Module):
+def pad_batch(x, n, after=True):
+    pad_shape = x.data.shape[1:]
+    pad = x.data.new(n, *pad_shape).zero_()
+    pad = Variable(pad)
+    l = [x, pad] if after else [pad, x]
+    x = torch.cat(l)
+
+    return x
+
+
+class MultiContextSkipThoughts(nn.Module):
     @staticmethod
     def get_cell_cls(rnn_cell):
         if rnn_cell == "lstm":
@@ -21,7 +31,7 @@ class SkipThoughts(nn.Module):
     def __init__(self, vocab, word_dim, hidden_dim, n_layers, n_decoders,
                  bidirectional=True, batch_first=True, dropout_prob=0.0,
                  encoder_cell="gru", decoder_cell="gru"):
-        super(SkipThoughts, self).__init__()
+        super(MultiContextSkipThoughts, self).__init__()
 
         self.is_cuda = False
         self.vocab = vocab
@@ -69,14 +79,14 @@ class SkipThoughts(nn.Module):
             setattr(self, "decoder{}".format(i), decoder)
 
     def cuda(self, *args, **kwargs):
-        ret = super(SkipThoughts, self).cuda(*args, **kwargs)
+        ret = super(MultiContextSkipThoughts, self).cuda(*args, **kwargs)
 
         self.is_cuda = True
 
         return ret
 
     def cpu(self, *args, **kwargs):
-        ret = super(SkipThoughts, self).cpu(*args, **kwargs)
+        ret = super(MultiContextSkipThoughts, self).cpu(*args, **kwargs)
 
         self.is_cuda = False
 
@@ -96,6 +106,7 @@ class SkipThoughts(nn.Module):
         if cell_type == "lstm":
             c = o.data.new(self.n_layers * self.n_directions,
                            batch_size, self.cell_hidden_size).zero_()
+            c = Variable(c)
 
             return (o, c)
         elif cell_type == "gru":
@@ -169,15 +180,36 @@ class SkipThoughts(nn.Module):
 
     def forward(self, x, x_lens, ys, ys_lens, xys_idx):
         h = self._encode(x, x_lens)
+
+        if self.batch_first:
+            ys = ys.transpose(1, 0)
+            ys_lens = ys_lens.transpose(1, 0)
+            xys_idx = xys_idx.transpose(1, 0)
+
         logits_list = []
 
         for dec_idx, (y, y_lens, xy_idx) in enumerate(
                 zip(ys, ys_lens, xys_idx)):
             h_dec = torch.index_select(h, 0, xy_idx)
             logits = self._decode(dec_idx, h_dec, y, y_lens)
-            logits_list.append(logits)
 
-        return logits_list, h
+            nil_batches = len(h_dec) - len(logits)
+            if nil_batches:
+                logits = pad_batch(logits, nil_batches, True)
+
+            logits_list.append(logits.unsqueeze(0))
+
+        logits = torch.cat(logits_list)
+
+        if self.batch_first:
+            logits = logits.transpose(1, 0)
+
+        return logits, h
+
+
+class SkipThoughts(MultiContextSkipThoughts):
+    def __init__(self, *args, **kwargs):
+        super(SkipThoughts, self).__init__(*args, n_decoders=2, **kwargs)
 
 
 def sequence_mask(lens, max_len=None):

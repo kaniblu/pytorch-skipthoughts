@@ -1,5 +1,7 @@
 import io
+import sys
 import pickle
+import logging
 
 import tqdm
 import numpy as np
@@ -19,10 +21,11 @@ def parse_args():
     parser = ArgParser(allow_config=True)
     parser.add("--ckpt-path", type=path, required=True)
     parser.add("--vocab-path", type=path, required=True)
-    parser.add("--data-path", type=path, required=True)
-    parser.add("--vector-path", type=path, required=True)
+    parser.add("--data-path", type=path, default=None, required=False)
+    parser.add("--vector-path", type=path, default=None, required=False)
     parser.add("--batch-size", type=int, default=32)
     parser.add("--gpu", action="store_true", default=False)
+    parser.add("--verbose", action="store_true", default=False)
 
     group = parser.add_argument_group("Model Parameters")
     group.add("--encoder-cell", type=str, default="gru",
@@ -36,16 +39,19 @@ def parse_args():
     group.add("--hidden-dim", type=int, default=100)
     group.add("--layers", type=int, default=2)
     group.add("--bidirectional", action="store_true", default=False)
-
     args = parser.parse_args()
 
     return args
 
 
 def file_reader(data_path):
-    with io.open(data_path, "r", encoding="utf-8") as f:
-        for line in f:
+    if data_path is None:
+        for line in sys.stdin:
             yield line.strip()
+    else:
+        with io.open(data_path, "r", encoding="utf-8") as f:
+            for line in f:
+                yield line.strip()
 
 
 class Vectorizer(object):
@@ -83,27 +89,36 @@ class Vectorizer(object):
         return vectors.data
 
 
-def vectorize(vectorizer, data_generator, save_path):
+def vectorize(vectorizer, data_generator, save_path, verbose):
 
-    for x, x_lens in tqdm.tqdm(data_generator, desc="vectorizing"):
+    for x, x_lens in tqdm.tqdm(data_generator,
+                               desc="vectorizing",
+                               disable=not verbose):
         vectors = vectorizer.vectorize(x, x_lens)
         vectors = vectors.numpy()
 
-        with open(save_path, "ab") as f:
-            np.savetxt(f, vectors)
+        if save_path is None:
+            np.savetxt(sys.stdout.buffer, vectors)
+        else:
+            with open(save_path, "ab") as f:
+                np.savetxt(f, vectors)
 
 
 def main():
     args = parse_args()
     n_decoders = args.before + args.after + (1 if args.predict_self else 0)
 
-    ensure_dir_exists(args.vector_path)
+    if not args.verbose:
+        logging.basicConfig(level=logging.CRITICAL)
 
-    print("Loading vocabulary...")
+    if args.vector_path is not None:
+        ensure_dir_exists(args.vector_path)
+
+    logging.info("Loading vocabulary...")
     with open(args.vocab_path, "rb") as f:
         vocab = pickle.load(f)
 
-    print("Loading model...")
+    logging.info("Loading model...")
     model_cls = MultiContextSkipThoughts
     model = model_cls(vocab, args.word_dim, args.hidden_dim,
                       encoder_cell=args.encoder_cell,
@@ -114,7 +129,7 @@ def main():
                       batch_first=True)
     model.load_state_dict(torch.load(args.ckpt_path))
 
-    print("Preparing vectorizing environment...")
+    logging.info("Preparing vectorizing environment...")
     vectorizer = Vectorizer(model,
                             use_gpu=args.gpu)
     preprocessor = BatchPreprocessor(vocab)
@@ -126,10 +141,10 @@ def main():
                                          allow_residual=True,
                                          max_length=None)
 
-    print("Vectorizing...")
-    vectorize(vectorizer, data_generator, args.vector_path)
+    logging.info("Vectorizing...")
+    vectorize(vectorizer, data_generator, args.vector_path, args.verbose)
 
-    print("Done!")
+    logging.info("Done!")
 
 if __name__ == '__main__':
     main()

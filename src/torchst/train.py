@@ -424,7 +424,8 @@ class Trainer(object):
         viz.save([self.save_dir])
 
     def train(self):
-        optimizer = O.Adam(self.model.parameters())
+        optimizer = O.Adam([p for p in self.model.parameters()
+                            if p.requires_grad])
         step = 0
         t = tqdm.tqdm()
 

@@ -2,7 +2,7 @@ from setuptools import setup
 from setuptools import find_packages
 
 
-__VERSION__ = "0.1.2"
+__VERSION__ = "0.1.3"
 
 setup(
     name="pytorch-skipthoughts",

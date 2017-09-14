@@ -5,6 +5,8 @@ import torch.nn.utils.rnn as R
 import torch.nn.functional as F
 from torch.autograd import Variable
 
+from torchsru import SRU
+
 
 def pad_batch(x, n, after=True):
     pad_shape = x.data.shape[1:]
@@ -23,14 +25,20 @@ class MultiContextSkipThoughts(nn.Module):
             cell_cls = nn.LSTM
         elif rnn_cell == "gru":
             cell_cls = nn.GRU
+        elif rnn_cell == "sru":
+            cell_cls = SRU
         else:
             raise ValueError("Unrecognized rnn cell: {}".format(rnn_cell))
 
         return cell_cls
 
     def __init__(self, vocab, word_dim, hidden_dim, n_layers, n_decoders,
-                 bidirectional=True, batch_first=True, dropout_prob=0.0,
-                 encoder_cell="gru", decoder_cell="gru"):
+                 bidirectional=True,
+                 batch_first=True,
+                 dropout_prob=0.0,
+                 reverse_encoder=False,
+                 encoder_cell="gru",
+                 decoder_cell="gru"):
         super(MultiContextSkipThoughts, self).__init__()
 
         self.is_cuda = False
@@ -38,6 +46,7 @@ class MultiContextSkipThoughts(nn.Module):
         self.vocab_size = vocab_size = len(vocab)
         self.word_dim = word_dim
         self.hidden_dim = hidden_dim
+        self.reverse_encoder = reverse_encoder
 
         self.encoder_cell_type = encoder_cell
         self.decoder_cell_type = decoder_cell
@@ -50,19 +59,20 @@ class MultiContextSkipThoughts(nn.Module):
         self.eos_idx = vocab[vocab.eos]
         self.pad_idx = vocab[vocab.pad]
         self.n_directions = 2 if bidirectional else 1
-        self.cell_hidden_size = hidden_dim // self.n_directions // n_layers
+        self.encoder_hidden_size = hidden_dim // self.n_directions // n_layers
+        self.decoder_hidden_size = hidden_dim // n_layers
 
         self.embeddings = nn.Embedding(vocab_size, word_dim,
                                        padding_idx=self.pad_idx)
         self.W_i = nn.Linear(word_dim, hidden_dim)
-        self.W_o = nn.Linear(self.cell_hidden_size * self.n_directions,
+        self.W_o = nn.Linear(self.encoder_hidden_size * self.n_directions,
                              word_dim)
 
         enc_cls = self.get_cell_cls(encoder_cell)
         dec_cls = self.get_cell_cls(decoder_cell)
 
         self.encoder = enc_cls(input_size=hidden_dim,
-                               hidden_size=self.cell_hidden_size,
+                               hidden_size=self.encoder_hidden_size,
                                num_layers=n_layers,
                                bidirectional=bidirectional,
                                dropout=dropout_prob,
@@ -70,9 +80,9 @@ class MultiContextSkipThoughts(nn.Module):
 
         for i in range(n_decoders):
             decoder = dec_cls(input_size=hidden_dim,
-                              hidden_size=self.cell_hidden_size,
+                              hidden_size=self.decoder_hidden_size,
                               num_layers=n_layers,
-                              bidirectional=bidirectional,
+                              bidirectional=False,
                               dropout=dropout_prob,
                               batch_first=True)
 
@@ -102,21 +112,33 @@ class MultiContextSkipThoughts(nn.Module):
         for i in range(self.n_decoders):
             getattr(self, "decoder{}".format(i)).reset_parameters()
 
-    def compose_hidden_state(self, cell_type, o, batch_size):
+    def compose_decoder_hidden(self, cell_type, c, batch_size):
         if cell_type == "lstm":
-            c = o.data.new(self.n_layers * self.n_directions,
-                           batch_size, self.cell_hidden_size).zero_()
-            c = Variable(c)
+            h = c.data.new(self.n_layers,
+                           batch_size, self.decoder_hidden_size).zero_()
+            h = Variable(h)
 
-            return (o, c)
+            return (h, c)
         elif cell_type == "gru":
-            return o
+            return c
+        elif cell_type == "sru":
+            return c
+        else:
+            raise ValueError("Unrecognized cell type: {}".format(
+                cell_type
+            ))
 
     def extract_hidden_state(self, cell_type, h):
         if cell_type == "lstm":
-            return h[0]
+            return h[1]
         elif cell_type == "gru":
             return h
+        elif cell_type == "sru":
+            return h
+        else:
+            raise ValueError("Unrecognized cell type: {}".format(
+                cell_type
+            ))
 
     def encode(self, x, x_lens):
         return self._encode(x, x_lens)
@@ -125,7 +147,10 @@ class MultiContextSkipThoughts(nn.Module):
         x_packed = R.pack_padded_sequence(x, x_lens,
                                           batch_first=self.batch_first)
 
-        cell.flatten_parameters()
+        # Following line does not improve memory usage or computation efficiency
+        # as claimed by pyTorch warning messages
+        # cell.flatten_parameters()
+
         if h is not None:
             output, h = cell(x_packed, h)
         else:
@@ -135,8 +160,32 @@ class MultiContextSkipThoughts(nn.Module):
 
         return output, h
 
+    def reverse_sequence(self, x, x_lens):
+        batch_size, seq_len = x.size()
+
+        inv_idx = Variable(torch.arange(seq_len - 1, -1, -1).long())
+        shift_idx = Variable(torch.arange(0, seq_len).long())
+
+        if x.is_cuda:
+            inv_idx = inv_idx.cuda(x.get_device())
+            shift_idx = shift_idx.cuda(x.get_device())
+
+        inv_idx = inv_idx.unsqueeze(0).expand_as(x)
+        shift_idx = shift_idx.unsqueeze(0).expand_as(x)
+        shift = (seq_len + (-1 * x_lens)).unsqueeze(-1).expand_as(x)
+        shift_idx = shift_idx + shift
+        shift_idx = shift_idx.clamp(0, seq_len - 1)
+
+        x = x.gather(1, inv_idx)
+        x = x.gather(1, shift_idx)
+
+        return x
+
     def _encode(self, x, x_lens):
         batch_size, seq_len = x.size()
+
+        if self.reverse_encoder:
+            x = self.reverse_sequence(x, x_lens)
 
         x = self.embeddings(x)
         x = x.view(-1, self.word_dim)
@@ -156,9 +205,9 @@ class MultiContextSkipThoughts(nn.Module):
 
         assert decoder is not None
 
-        h = h.view(-1, self.n_layers * self.n_directions, self.cell_hidden_size)
+        h = h.view(-1, self.n_layers, self.decoder_hidden_size)
         h = h.transpose(1, 0).contiguous()
-        h = self.compose_hidden_state(self.decoder_cell_type, h, batch_size)
+        h = self.compose_decoder_hidden(self.decoder_cell_type, h, batch_size)
 
         x = self.embeddings(x)
         x = x.view(-1, self.word_dim)
@@ -172,7 +221,7 @@ class MultiContextSkipThoughts(nn.Module):
             o = torch.cat([o, pad], 1)
 
         o = o.contiguous()
-        o = o.view(-1, self.n_directions * self.cell_hidden_size)
+        o = o.view(-1, self.decoder_hidden_size)
         o = self.W_o(o)
         logits = torch.mm(o, self.embeddings.weight.t())
         logits = logits.view(batch_size, seq_len, self.vocab_size)

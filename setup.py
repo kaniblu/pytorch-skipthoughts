@@ -1,7 +1,8 @@
 from setuptools import setup
+from setuptools import find_packages
 
 
-__VERSION__ = "0.1.1"
+__VERSION__ = "0.1.2"
 
 setup(
     name="pytorch-skipthoughts",
@@ -17,13 +18,16 @@ setup(
         "Programming Language :: Python :: 3"
     ],
     keywords="pytorch skip-thoughts multi-gpu gpu cuda deep learning nlp",
-    packages=[
-        "torchst"
-    ],
+    packages=find_packages("src"),
+    package_dir={"": "src"},
     install_requires=[
+        "pytorch-sru",
         "pytorch-text-utils",
         "visdom-pooled",
         "pyaap",
-        "tqdm"
-    ]
+        "tqdm",
+    ],
+    package_data={
+        "": ["*.cu"]
+    }
 )

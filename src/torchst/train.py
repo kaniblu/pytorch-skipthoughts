@@ -65,10 +65,11 @@ def parse_args():
     group.add("--visdom-buffer-size", type=int, default=10)
 
     group = parser.add_group("Model Parameters")
+    group.add("--reverse-encoder", action="store_true", default=False)
     group.add("--encoder-cell", type=str, default="lstm",
-              choices=["lstm", "gru"])
+              choices=["lstm", "gru", "sru"])
     group.add("--decoder-cell", type=str, default="gru",
-              choices=["lstm", "gru"])
+              choices=["lstm", "gru", "sru"])
     group.add("--before", type=int, default=1)
     group.add("--after", type=int, default=1)
     group.add("--predict-self", action="store_true", default=False)
@@ -431,6 +432,9 @@ class Trainer(object):
             for data in self.data_generator:
                 step += 1
 
+                self.model.zero_grad()
+                optimizer.zero_grad()
+
                 if step % self.val_period == 0:
                     loss = self.step_val(step, data)
                 else:
@@ -511,6 +515,7 @@ def main():
     print("Initializing model...")
     model_cls = DataParallelSkipThoughts
     model = model_cls(vocab, args.word_dim, args.hidden_dim,
+                      reverse_encoder=args.reverse_encoder,
                       encoder_cell=args.encoder_cell,
                       decoder_cell=args.decoder_cell,
                       n_decoders=n_decoders,

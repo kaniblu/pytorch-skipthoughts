@@ -39,6 +39,8 @@ def parse_args():
     group.add("--hidden-dim", type=int, default=100)
     group.add("--layers", type=int, default=2)
     group.add("--bidirectional", action="store_true", default=False)
+    group.add("--reverse-encoder", action="store_true", default=False)
+
     args = parser.parse_args()
 
     return args
@@ -126,6 +128,7 @@ def main():
                       n_decoders=n_decoders,
                       n_layers=args.layers,
                       bidirectional=args.bidirectional,
+                      reverse_encoder=args.reverse_encoder,
                       batch_first=True)
     model.load_state_dict(torch.load(args.ckpt_path))
 

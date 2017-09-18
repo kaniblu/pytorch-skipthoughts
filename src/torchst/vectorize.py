@@ -29,9 +29,9 @@ def parse_args():
 
     group = parser.add_argument_group("Model Parameters")
     group.add("--encoder-cell", type=str, default="gru",
-              choices=["lstm", "gru"])
+              choices=["lstm", "gru", "sru"])
     group.add("--decoder-cell", type=str, default="gru",
-              choices=["lstm", "gru"])
+              choices=["lstm", "gru", "sru"])
     group.add("--before", type=int, default=1)
     group.add("--after", type=int, default=1)
     group.add("--predict-self", action="store_true", default=False)

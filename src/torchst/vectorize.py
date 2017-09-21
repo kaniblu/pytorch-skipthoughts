@@ -172,7 +172,7 @@ class EmbeddingBatchPreprocessor(BatchPreprocessor):
                     if vector is None:
                         words_embed.append(self.embeddings[self.unk_idx])
                     else:
-                        vector = torch.LongTensor(vector)
+                        vector = torch.Tensor(vector)
                         words_embed.append(vector)
 
             sent = torch.stack(words_embed)

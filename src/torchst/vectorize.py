@@ -148,15 +148,22 @@ class EmbeddingBatchPreprocessor(BatchPreprocessor):
         self.eos = self.vocab.eos
 
     def __call__(self, batch):
-        lens = [len(w) for w in batch]
-        max_len = max(lens)
         batch_new = []
 
         for words in batch:
             if self.add_bos:
                 words = [self.bos] + words
             if self.add_eos:
-                words = [self.eos] + words
+                words = words + [self.eos]
+
+            batch_new.append(words)
+
+        batch = batch_new
+        batch_new = []
+        lens = [len(w) for w in batch]
+        max_len = max(lens)
+
+        for words in batch:
             if len(words) < max_len:
                 words += [self.pad] * (max_len - len(words))
 
@@ -234,7 +241,7 @@ def main():
         )
     else:
         preprocessor = BatchPreprocessor(
-            vocab=vocab
+            vocab=vocab,
         )
 
     reader = file_reader(args.data_path)

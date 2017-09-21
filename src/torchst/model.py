@@ -141,7 +141,17 @@ class MultiContextSkipThoughts(nn.Module):
             ))
 
     def encode(self, x, x_lens):
-        return self._encode(x, x_lens)
+        x = self.embeddings(x)
+        return self._encode_embed(x, x_lens)
+
+    def encode_embed(self, x, x_lens):
+        """Encodes raw word embeddings
+
+        Arguments:
+            x: [batch_size, seq_len, word_dim] FloatTensor
+            x_lens: [batch_size] LongTensor
+        """
+        return self._encode_embed(x, x_lens)
 
     def _run_rnn_packed(self, cell, x, x_lens, h=None):
         x_packed = R.pack_padded_sequence(x, x_lens,
@@ -161,7 +171,7 @@ class MultiContextSkipThoughts(nn.Module):
         return output, h
 
     def reverse_sequence(self, x, x_lens):
-        batch_size, seq_len = x.size()
+        batch_size, seq_len, word_dim = x.size()
 
         inv_idx = Variable(torch.arange(seq_len - 1, -1, -1).long())
         shift_idx = Variable(torch.arange(0, seq_len).long())
@@ -170,9 +180,9 @@ class MultiContextSkipThoughts(nn.Module):
             inv_idx = inv_idx.cuda(x.get_device())
             shift_idx = shift_idx.cuda(x.get_device())
 
-        inv_idx = inv_idx.unsqueeze(0).expand_as(x)
-        shift_idx = shift_idx.unsqueeze(0).expand_as(x)
-        shift = (seq_len + (-1 * x_lens)).unsqueeze(-1).expand_as(x)
+        inv_idx = inv_idx.unsqueeze(0).unsqueeze(-1).expand_as(x)
+        shift_idx = shift_idx.unsqueeze(0).unsqueeze(-1).expand_as(x)
+        shift = (seq_len + (-1 * x_lens)).unsqueeze(-1).unsqueeze(-1).expand_as(x)
         shift_idx = shift_idx + shift
         shift_idx = shift_idx.clamp(0, seq_len - 1)
 
@@ -181,13 +191,12 @@ class MultiContextSkipThoughts(nn.Module):
 
         return x
 
-    def _encode(self, x, x_lens):
-        batch_size, seq_len = x.size()
+    def _encode_embed(self, x, x_lens):
+        batch_size, seq_len, word_embed = x.size()
 
         if self.reverse_encoder:
             x = self.reverse_sequence(x, x_lens)
 
-        x = self.embeddings(x)
         x = x.view(-1, self.word_dim)
         x = F.tanh(self.W_i(x))
         x_enc = x.view(-1, seq_len, self.hidden_dim)

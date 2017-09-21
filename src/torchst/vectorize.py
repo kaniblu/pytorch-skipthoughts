@@ -15,6 +15,8 @@ from yaap import path
 from yaap import ArgParser
 
 from .model import MultiContextSkipThoughts
+from .wordembed import FastText
+from .wordembed import load_embeddings
 
 
 def parse_args():
@@ -26,6 +28,12 @@ def parse_args():
     parser.add("--batch-size", type=int, default=32)
     parser.add("--gpu", action="store_true", default=False)
     parser.add("--verbose", action="store_true", default=False)
+
+    group = parser.add_argument_group("Word Expansion Options")
+    group.add("--wordembed-type", type=str, default=None,
+              choices=["glove", "fasttext", None])
+    group.add("--wordembed-path", type=path, default=None)
+    group.add("--fasttext-path", type=path, default=None)
 
     group = parser.add_argument_group("Model Parameters")
     group.add("--encoder-cell", type=str, default="gru",
@@ -44,6 +52,20 @@ def parse_args():
     args = parser.parse_args()
 
     return args
+
+
+class EmbedDict(object):
+    def __init__(self, embeddings):
+        self.embeddings = embeddings
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+    def query(self, word):
+        return self.embeddings.get(word)
 
 
 def file_reader(data_path):
@@ -82,7 +104,14 @@ class Vectorizer(object):
 
     def vectorize(self, x, x_lens):
         x, x_lens, r_idx = self.prepare_batch(x, x_lens)
-        vectors = self.model.encode(x, x_lens)
+
+        if len(x.size()) == 2:
+            vectors = self.model.encode(x, x_lens)
+        elif len(x.size()) == 3:
+            vectors = self.model.encode_embed(x, x_lens)
+        else:
+            raise Exception()
+
         vectors = torch.index_select(vectors, 0, r_idx)
 
         if self.is_cuda:
@@ -104,6 +133,56 @@ def vectorize(vectorizer, data_generator, save_path, verbose):
         else:
             with open(save_path, "ab") as f:
                 np.savetxt(f, vectors)
+
+
+# Custom Batch Preprocessor
+class EmbeddingBatchPreprocessor(BatchPreprocessor):
+    def __init__(self, model, we, *args, **kwargs):
+        super(EmbeddingBatchPreprocessor, self).__init__(*args, **kwargs)
+
+        self.wordembed = we
+        self.embeddings = model.embeddings.weight.data.cpu()
+        self.unk = self.vocab.unk
+        self.pad = self.vocab.pad
+        self.bos = self.vocab.bos
+        self.eos = self.vocab.eos
+
+    def __call__(self, batch):
+        lens = [len(w) for w in batch]
+        max_len = max(lens)
+        batch_new = []
+
+        for words in batch:
+            if self.add_bos:
+                words = [self.bos] + words
+            if self.add_eos:
+                words = [self.eos] + words
+            if len(words) < max_len:
+                words += [self.pad] * (max_len - len(words))
+
+            words_embed = []
+
+            for w in words:
+                if w in self.vocab.f2i:
+                    index = self.vocab.f2i[w]
+                    words_embed.append(self.embeddings[index])
+                else:
+                    vector = self.wordembed.query(w)
+
+                    if vector is None:
+                        words_embed.append(self.embeddings[self.unk_idx])
+                    else:
+                        vector = torch.LongTensor(vector)
+                        words_embed.append(vector)
+
+            sent = torch.stack(words_embed)
+            batch_new.append(sent)
+
+        batch = torch.stack(batch_new)
+        lens = torch.LongTensor(lens)
+
+        print(type(batch))
+        return batch, lens
 
 
 def main():
@@ -132,10 +211,33 @@ def main():
                       batch_first=True)
     model.load_state_dict(torch.load(args.ckpt_path))
 
-    logging.info("Preparing vectorizing environment...")
-    vectorizer = Vectorizer(model,
-                            use_gpu=args.gpu)
-    preprocessor = BatchPreprocessor(vocab)
+    logging.info("Loading word embeddings...")
+    we_type = args.wordembed_type
+
+    if we_type is not None:
+        if we_type == "glove":
+            embeddings = load_embeddings(args.wordembed_path, args.word_dim)
+            we = EmbedDict(embeddings)
+        elif we_type == "fasttext":
+            we = FastText(args.fasttext_path, args.wordembed_path)
+        else:
+            raise ValueError("Unrecognized word embed type: {}".format(
+                we_type
+            ))
+
+        logging.info("Preparing vectorizing environment...")
+        vectorizer = Vectorizer(model,
+                                use_gpu=args.gpu)
+        preprocessor = EmbeddingBatchPreprocessor(
+            model=model,
+            we=we,
+            vocab=vocab
+        )
+    else:
+        preprocessor = BatchPreprocessor(
+            vocab=vocab
+        )
+
     reader = file_reader(args.data_path)
     data_generator = create_generator_ae(reader,
                                          batch_size=args.batch_size,

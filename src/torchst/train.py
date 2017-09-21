@@ -24,6 +24,8 @@ from yaap import path
 
 from .model import MultiContextSkipThoughts
 from .model import compute_loss
+from .wordembed import preinitialize_fasttext_embeddings
+from .wordembed import preinitialize_glove_embeddings
 
 
 def parse_args():
@@ -82,40 +84,6 @@ def parse_args():
     args = parser.parse_args()
 
     return args
-
-
-def load_glove_embeddings(model, vocab, path):
-    with open(path, 'r') as f:
-        for i, line in enumerate(f):
-            tokens = line.split()
-            word = " ".join(tokens[:-model.word_dim])
-
-            if word not in vocab.f2i:
-                continue
-
-            idx = vocab.f2i[word]
-            values = [float(v) for v in tokens[-model.word_dim:]]
-            model.embeddings.weight.data[idx] = (torch.FloatTensor(values))
-
-
-def load_fasttext_embeddings(model, vocab, fasttext_path, embedding_path):
-    fasttext_path = os.path.abspath(fasttext_path)
-    temp_dir = tempfile.gettempdir()
-    query_path = os.path.join(temp_dir, "queries.txt")
-    out_path = os.path.join(temp_dir, "vecs.txt")
-
-    with open(query_path, "w") as f:
-        f.write("\n".join(vocab.words))
-
-    p1 = subprocess.Popen(["cat", query_path], stdout=subprocess.PIPE)
-    output = subprocess.check_output([fasttext_path,
-                                      "print-word-vectors",
-                                      embedding_path],
-                                     stdin=p1.stdout)
-    with open(out_path, "w") as f:
-        f.write(output.decode("utf-8"))
-
-    load_glove_embeddings(model, vocab, out_path)
 
 
 class DataGenerator(object):
@@ -529,11 +497,11 @@ def main():
 
     print("Loading word embeddings...")
     if args.wordembed_type == "glove":
-        load_glove_embeddings(model, vocab, args.wordembed_path)
+        preinitialize_glove_embeddings(model, vocab, args.wordembed_path)
     elif args.wordembed_type == "fasttext":
-        load_fasttext_embeddings(model, vocab,
+        preinitialize_fasttext_embeddings(model, vocab,
                                  fasttext_path=args.fasttext_path,
-                                 embedding_path=args.wordembed_path)
+                                 model_path=args.wordembed_path)
     elif args.wordembed_type == "none":
         pass
     else:

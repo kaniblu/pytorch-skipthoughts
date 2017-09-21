@@ -181,7 +181,6 @@ class EmbeddingBatchPreprocessor(BatchPreprocessor):
         batch = torch.stack(batch_new)
         lens = torch.LongTensor(lens)
 
-        print(type(batch))
         return batch, lens
 
 

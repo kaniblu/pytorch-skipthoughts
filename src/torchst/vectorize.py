@@ -220,6 +220,10 @@ def main():
     logging.info("Loading word embeddings...")
     we_type = args.wordembed_type
 
+    logging.info("Preparing vectorizing environment...")
+    vectorizer = Vectorizer(model,
+                            use_gpu=args.gpu)
+
     if we_type is not None:
         if we_type == "glove":
             embeddings = load_embeddings(args.wordembed_path, args.word_dim)
@@ -231,9 +235,6 @@ def main():
                 we_type
             ))
 
-        logging.info("Preparing vectorizing environment...")
-        vectorizer = Vectorizer(model,
-                                use_gpu=args.gpu)
         preprocessor = EmbeddingBatchPreprocessor(
             model=model,
             we=we,

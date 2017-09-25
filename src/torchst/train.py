@@ -21,6 +21,7 @@ from visdom_pooled import Visdom
 from yaap import ArgParser
 from yaap import path
 from configargparse import YAMLConfigFileParser
+from tensorboard import SummaryWriter
 
 from .model import MultiContextSkipThoughts
 from .model import compute_loss
@@ -43,6 +44,8 @@ def parse_args():
     parser.add("--batch-first", action="store_true", default=True,
                help="currently due to the limitation of DataParallel API,"
                     "it is impossible to operate without batch-first data")
+    parser.add("--visualizer", type=str, default=None,
+               choices=["visdom", "tensorboard"])
 
     group = parser.add_group("Word Embedding Options")
     group.add("--wordembed-type", type=str, default="none",
@@ -143,20 +146,20 @@ class DataGenerator(object):
 
 class Trainer(object):
     def __init__(self, model, gpu_devices, data_generator, n_epochs,
-                 viz_pool, save_dir, save_period, val_period, previews,
+                 logger, save_dir, save_period, val_period, previews,
                  batch_first=True):
         self.model = model
         self.gpu_devices = gpu_devices
         self.data_generator = data_generator
         self.n_epochs = n_epochs
-        self.viz_pool = viz_pool
+        self.logger = logger
         self.save_dir = save_dir
         self.save_period = save_period
         self.val_period = val_period
         self.previews = previews
         self.batch_first = batch_first
-        self.legend = ["average"] + ["decoder_{}".format(i) for i in
-                                     range(model.n_decoders)]
+        self.legend = ["average"] + ["decoder_{}".format(i)
+                                     for i in range(self.model.n_decoders)]
 
         if gpu_devices:
             self.model = model.cuda()
@@ -337,7 +340,7 @@ class Trainer(object):
                              dim=0,
                              module_kwargs=None)
 
-    def step(self, step, batch_data, volatile=True, viz_title=None):
+    def step(self, step, batch_data, volatile=True, title=None):
         processed_data = self.prepare_batches(batch_data,
                                               chunks=len(self.gpu_devices),
                                               volatile=volatile)
@@ -352,37 +355,27 @@ class Trainer(object):
         plot_X = [step] * (self.model.n_decoders + 1)
         plot_Y = [loss_val] + losses_val
 
-        self.viz_pool.apply_async(viz_run, ("plot", tuple(), dict(
-            X=[plot_X],
-            Y=[plot_Y],
-            opts=dict(
-                legend=self.legend,
-                title=viz_title
-            )
-        )))
+        self.logger.add_loss(title, **{
+            t: p for t, p in zip(self.legend, plot_Y)
+        })
 
         return merged_data, dec_logits, loss
 
     def step_val(self, step, batch_data):
         data, dec_logits, loss = self.step(step, batch_data,
                                            volatile=True,
-                                           viz_title="Validation Loss")
+                                           title="Validation Loss")
         sents = self.val_sents(data, dec_logits)
         text = self.val_text(*sents)
 
-        self.viz_pool.apply_async(viz_run, ("code", tuple(), dict(
-            text="Step {}\n".format(step) + text,
-            opts=dict(
-                title="Validation Text".format(step)
-            )
-        )))
+        self.logger.add_text("Validation Examples", text)
 
         return loss
 
     def step_train(self, step, batch_data):
         data, dec_logits, loss = self.step(step, batch_data,
                                            volatile=False,
-                                           viz_title="Training Loss")
+                                           title="Training Loss")
 
         return loss
 
@@ -483,6 +476,72 @@ class DataParallelSkipThoughts(MultiContextSkipThoughts):
         return super(DataParallelSkipThoughts, self).forward(*inputs, **kwargs)
 
 
+class TrainLogger(object):
+    def __init__(self):
+        self.step = 0
+
+    def next(self):
+        s = self.step
+        self.step += 1
+
+        return s
+
+    def add_loss(self, prefix, **losses):
+        raise NotImplementedError()
+
+    def add_text(self, name, text):
+        raise NotImplementedError()
+
+
+class TensorboardTrainLogger(TrainLogger):
+    def __init__(self, log_dir):
+        super(TensorboardTrainLogger, self).__init__()
+
+        self.log_dir = log_dir
+        self.writer = SummaryWriter(log_dir)
+
+    def add_loss(self, prefix, **losses):
+        for name, value in losses.items():
+            name = "{}-{}".format(prefix, name)
+            self.writer.add_scalar(name, value, self.next())
+
+    def add_text(self, name, text):
+        pass
+
+
+class VisdomTrainLogger(TrainLogger):
+    def __init__(self, viz_pool):
+        super(VisdomTrainLogger, self).__init__()
+
+        self.viz_pool = viz_pool
+
+    def add_loss(self, name, **losses):
+        self.viz_pool.apply_async(viz_run, ("plot", tuple(), dict(
+            X=[self.next()] * len(losses),
+            Y=[list(losses.values())],
+            opts=dict(
+                legend=list(losses.keys()),
+                title=name
+            )
+        )))
+
+    def add_text(self, name, text):
+        self.viz_pool.apply_async(viz_run, ("code", tuple(), dict(
+            text=text,
+            opts=dict(
+                title=name
+            )
+        )))
+
+
+class DummyTrainLogger(TrainLogger):
+    def add_loss(self, prefix, **losses):
+        pass
+
+    def add_text(self, name, text):
+        pass
+
+
 def main():
     args = parse_args()
     n_decoders = args.before + args.after + (1 if args.predict_self else 0)
@@ -533,20 +592,23 @@ def main():
     if args.wordembed_freeze:
         model.embeddings.weight.requires_grad = False
 
-    viz_pool = mp.ThreadPool(1, initializer=init_viz, initargs=(tuple(), dict(
-        buffer_size=args.visdom_buffer_size,
-        server="http://{}".format(args.visdom_host),
-        port=args.visdom_port,
-        env=args.name,
-        name=timestamp
-    )))
+    if args.visualizer is None:
+        logger = DummyTrainLogger()
+    elif args.visualizer == "tensorboard":
+        logger = TensorboardTrainLogger(save_dir)
+    elif args.visualizer == "visdom":
+        viz_pool = mp.ThreadPool(1, initializer=init_viz, initargs=(tuple(), dict(
+            buffer_size=args.visdom_buffer_size,
+            server="http://{}".format(args.visdom_host),
+            port=args.visdom_port,
+            env=args.name,
+            name=timestamp
+        )))
+        logger = VisdomTrainLogger(viz_pool)
+    else:
+        raise ValueError("Unrecognized visualizer type: {}".format(args.visualizer))
 
-    viz_pool.apply_async(viz_run, ("code", tuple(), dict(
-        text=str(args)[10:-1].replace(", ", "\n"),
-        opts=dict(
-            title="Arguments"
-        )
-    )))
+    logger.add_text("Arguments", str(args)[10:-1].replace(", ", "\n"))
 
     config_path = os.path.join(save_dir, os.path.basename(args.config))
     shutil.copy(args.config, config_path)
@@ -576,7 +638,7 @@ def main():
         gpu_devices=args.gpus,
         data_generator=data_generator,
         n_epochs=args.epochs,
-        viz_pool=viz_pool,
+        logger=logger,
         save_dir=save_dir,
         save_period=args.save_period,
         val_period=args.val_period,

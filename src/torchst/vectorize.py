@@ -155,7 +155,10 @@ class BatchGenerator(Generator):
         batch = []
 
         for item in self.items:
-            c = item[0]
+            if item:
+                c = item[0]
+            else:
+                c = None
 
             if c != self.stop_char:
                 batch.append(item)
@@ -163,7 +166,8 @@ class BatchGenerator(Generator):
             if c != self.stop_char and len(batch) < self.batch_size:
                 continue
 
-            yield batch
+            if batch:
+                yield batch
 
             del batch
             batch = []

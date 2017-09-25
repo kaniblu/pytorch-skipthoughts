@@ -142,16 +142,6 @@ def load_fasttext_embeddings(words, fasttext_path, model_path):
     return embeddings
 
 
-def preinitialize_glove_embeddings(model, vocab, embed_path):
-    embeddings = load_embeddings(embed_path, model.word_dim)
-    preinitialize_embeddings(model, vocab, embeddings)
-
-
-def preinitialize_fasttext_embeddings(model, vocab, fasttext_path, model_path):
-    embeddings = load_fasttext_embeddings(vocab.words, fasttext_path, model_path)
-    preinitialize_embeddings(model, vocab, embeddings)
-
-
 class WordEmbeddingTranslator(nn.Module):
     def __init__(self, word_dim):
         super(WordEmbeddingTranslator, self).__init__()

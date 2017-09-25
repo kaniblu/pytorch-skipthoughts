@@ -25,8 +25,10 @@ from tensorboard import SummaryWriter
 
 from .model import MultiContextSkipThoughts
 from .model import compute_loss
-from .wordembed import preinitialize_fasttext_embeddings
-from .wordembed import preinitialize_glove_embeddings
+from .wordembed import load_embeddings_mp
+from .wordembed import load_embeddings
+from .wordembed import load_fasttext_embeddings
+from .wordembed import preinitialize_embeddings
 
 
 def parse_args():
@@ -54,6 +56,7 @@ def parse_args():
     group.add("--fasttext-path", type=path, default=None,
               help="Path to FastText binary.")
     group.add("--wordembed-freeze", action="store_true", default=False)
+    group.add("--wordembed-processes", type=int, default=4)
 
     group = parser.add_group("Training Options")
     group.add("--epochs", type=int, default=3)
@@ -576,12 +579,28 @@ def main():
     logging.info("number of params: {}".format(n_params))
 
     logging.info("loading word embeddings...")
+    assert args.wordembed_processes >= 1, \
+        "number of processes must be larger than or equal to 1."
+
+    if args.wordembed_processes > 1:
+        def embedding_loader(path, word_dim):
+            return load_embeddings_mp(path, word_dim,
+                                      processes=args.wordembed_processes)
+    else:
+        embedding_loader = load_embeddings
+
     if args.wordembed_type == "glove":
-        preinitialize_glove_embeddings(model, vocab, args.wordembed_path)
+        embeddings = embedding_loader(args.wordembed_path, model.word_dim)
+        preinitialize_embeddings(model, vocab, embeddings)
     elif args.wordembed_type == "fasttext":
-        preinitialize_fasttext_embeddings(model, vocab.words,
-                                 fasttext_path=args.fasttext_path,
-                                 model_path=args.wordembed_path)
+        fasttext_path = args.fasttext_path
+
+        assert fasttext_path is not None, \
+            "fasttext_path must specified when embed_type is fasttext."
+        embeddings = load_fasttext_embeddings(vocab.words,
+                                              fasttext_path,
+                                              args.wordembed_path)
+        preinitialize_embeddings(model, vocab, embeddings)
     elif args.wordembed_type == "none":
         pass
     else:

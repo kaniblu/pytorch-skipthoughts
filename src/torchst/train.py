@@ -1,10 +1,9 @@
-import datetime
-import multiprocessing.pool as mp
 import os
 import pickle
 import shutil
-import subprocess
-import tempfile
+import logging
+import datetime
+import multiprocessing.pool as mp
 
 import torch
 import torch.optim as O
@@ -456,6 +455,25 @@ def file_list_reader(dir_or_paths, shuffle_files=False):
                 yield line
 
 
+def prod(*args):
+    x = 1
+
+    for a in args:
+        x *= a
+
+    return x
+
+
+def count_parameters(model):
+    counts = 0
+
+    for param in model.parameters():
+        if param.requires_grad:
+            counts += prod(*param.size())
+
+    return counts
+
+
 class DataParallelSkipThoughts(MultiContextSkipThoughts):
     def __init__(self, *args, **kwargs):
         super(DataParallelSkipThoughts, self).__init__(*args, **kwargs)
@@ -471,7 +489,7 @@ def main():
 
     assert os.path.exists(args.vocab_path)
 
-    print("Loading vocabulary...")
+    logging.info("loading vocabulary...")
     with open(args.vocab_path, "rb") as f:
         vocab = pickle.load(f)
 
@@ -482,7 +500,7 @@ def main():
     if not os.path.exists(save_dir):
         os.makedirs(save_dir, exist_ok=True)
 
-    print("Initializing model...")
+    logging.info("initializing model...")
     model_cls = DataParallelSkipThoughts
     model = model_cls(vocab, args.word_dim, args.hidden_dim,
                       reverse_encoder=args.reverse_encoder,
@@ -495,8 +513,10 @@ def main():
                       batch_first=args.batch_first)
 
     model.reset_parameters()
+    n_params = count_parameters(model)
+    logging.info("number of params: {}".format(n_params))
 
-    print("Loading word embeddings...")
+    logging.info("loading word embeddings...")
     if args.wordembed_type == "glove":
         preinitialize_glove_embeddings(model, vocab, args.wordembed_path)
     elif args.wordembed_type == "fasttext":
@@ -531,7 +551,7 @@ def main():
     config_path = os.path.join(save_dir, os.path.basename(args.config))
     shutil.copy(args.config, config_path)
 
-    print("Preparing training environment...")
+    logging.info("preparing training environment...")
     # Refer to torchtextutils.ContextDataGenerator
     batch_size = args.batch_size + args.before + args.after
 
@@ -564,10 +584,10 @@ def main():
         batch_first=args.batch_first
     )
 
-    print("Training...")
+    logging.info("training...")
     trainer.train()
 
-    print("Done!")
+    logging.info("done!")
 
 
 if __name__ == '__main__':

@@ -238,7 +238,8 @@ class MultiContextSkipThoughts(nn.Module):
         return logits
 
     def forward(self, x, x_lens, ys, ys_lens, xys_idx):
-        h = self._encode(x, x_lens)
+        x = self.embeddings(x)
+        h = self._encode_embed(x, x_lens)
 
         if self.batch_first:
             ys = ys.transpose(1, 0)

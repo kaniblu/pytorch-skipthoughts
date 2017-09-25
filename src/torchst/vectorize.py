@@ -7,9 +7,13 @@ import tqdm
 import numpy as np
 import torch
 from torch.autograd import Variable
-from torchtextutils import create_generator_ae
-from torchtextutils import Vocabulary
 from torchtextutils import BatchPreprocessor
+from torchtextutils import Generator
+from torchtextutils import SplitWordIterator
+from torchtextutils import FunctionMapper
+from torchtextutils import MemoryPinner
+from torchtextutils import SentenceWordTokenizer
+from torchtextutils import Vocabulary
 from torchtextutils.common import ensure_dir_exists
 from yaap import path
 from yaap import ArgParser
@@ -30,6 +34,7 @@ def parse_args():
     parser.add("--batch-size", type=int, default=32)
     parser.add("--gpu", action="store_true", default=False)
     parser.add("--verbose", action="store_true", default=False)
+    parser.add("--flush_char", type=str, default=chr(0x05))
 
     group = parser.add_argument_group("Word Expansion Options")
     group.add("--wordembed-type", type=str, default=None,
@@ -137,6 +142,37 @@ def vectorize(vectorizer, data_generator, save_path, verbose):
                 np.savetxt(f, vectors)
 
 
+class BatchGenerator(Generator):
+    def __init__(self, items, batch_size,
+                 allow_residual=True,
+                 stop_char=chr(0x05)):
+        self.items = items
+        self.batch_size = batch_size
+        self.allow_residual = allow_residual
+        self.stop_char = stop_char
+
+    def generate(self):
+        batch = []
+
+        for item in self.items:
+            c = item[0]
+
+            if c != self.stop_char:
+                batch.append(item)
+
+            if c != self.stop_char and len(batch) < self.batch_size:
+                continue
+
+            yield batch
+
+            del batch
+            batch = []
+
+        if self.allow_residual and batch:
+            yield batch
+            del batch
+
+
 # Custom Batch Preprocessor
 class EmbeddingBatchPreprocessor(BatchPreprocessor):
     def __init__(self, model, we, *args, **kwargs):
@@ -191,6 +227,24 @@ class EmbeddingBatchPreprocessor(BatchPreprocessor):
         lens = torch.LongTensor(lens)
 
         return batch, lens
+
+
+def create_generator_ae(sents, batch_size, preprocessor,
+                        pin_memory=True, allow_residual=True, max_length=None,
+                        word_iterator=SplitWordIterator,
+                        flush_char=chr(0x05)):
+    sent_tokens = SentenceWordTokenizer(sents, max_length,
+                                        word_iterator=word_iterator)
+    batches = BatchGenerator(sent_tokens, batch_size,
+                             allow_residual=allow_residual)
+    prep_batches = FunctionMapper(batches, preprocessor)
+
+    if pin_memory:
+        ret = MemoryPinner(prep_batches)
+    else:
+        ret = prep_batches
+
+    return ret
 
 
 def main():
@@ -253,7 +307,8 @@ def main():
                                          preprocessor=preprocessor,
                                          pin_memory=True,
                                          allow_residual=True,
-                                         max_length=None)
+                                         max_length=None,
+                                         flush_char=args.flush_char)
 
     logging.info("Vectorizing...")
     vectorize(vectorizer, data_generator, args.vector_path, args.verbose)

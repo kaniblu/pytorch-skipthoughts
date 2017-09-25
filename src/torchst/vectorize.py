@@ -13,6 +13,7 @@ from torchtextutils import BatchPreprocessor
 from torchtextutils.common import ensure_dir_exists
 from yaap import path
 from yaap import ArgParser
+from configargparse import YAMLConfigFileParser
 
 from .model import MultiContextSkipThoughts
 from .wordembed import FastText
@@ -20,7 +21,8 @@ from .wordembed import load_embeddings
 
 
 def parse_args():
-    parser = ArgParser(allow_config=True)
+    parser = ArgParser(allow_config=True,
+                       config_file_parser_class=YAMLConfigFileParser)
     parser.add("--ckpt-path", type=path, required=True)
     parser.add("--vocab-path", type=path, required=True)
     parser.add("--data-path", type=path, default=None, required=False)

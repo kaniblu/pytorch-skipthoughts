@@ -21,6 +21,7 @@ from torchtextutils import create_generator_st
 from visdom_pooled import Visdom
 from yaap import ArgParser
 from yaap import path
+from configargparse import YAMLConfigFileParser
 
 from .model import MultiContextSkipThoughts
 from .model import compute_loss
@@ -29,8 +30,8 @@ from .wordembed import preinitialize_glove_embeddings
 
 
 def parse_args():
-    parser = ArgParser(allow_config=True)
-
+    parser = ArgParser(allow_config=True,
+                       config_file_parser_class=YAMLConfigFileParser)
     parser.add("--name", type=str, default="main")
     parser.add("--data-path", type=path, action="append", required=True,
                help="Path to a sentence file or directory that contains "

@@ -579,7 +579,7 @@ def main():
     if args.wordembed_type == "glove":
         preinitialize_glove_embeddings(model, vocab, args.wordembed_path)
     elif args.wordembed_type == "fasttext":
-        preinitialize_fasttext_embeddings(model, vocab,
+        preinitialize_fasttext_embeddings(model, vocab.words,
                                  fasttext_path=args.fasttext_path,
                                  model_path=args.wordembed_path)
     elif args.wordembed_type == "none":

@@ -22,6 +22,8 @@ from configargparse import YAMLConfigFileParser
 from .model import MultiContextSkipThoughts
 from .wordembed import FastText
 from .wordembed import load_embeddings
+from .wordembed import load_embeddings_mp
+from .wordembed import WordEmbeddingTranslator
 
 
 def parse_args():
@@ -41,6 +43,9 @@ def parse_args():
               choices=["glove", "fasttext", None])
     group.add("--wordembed-path", type=path, default=None)
     group.add("--fasttext-path", type=path, default=None)
+    group.add("--wordembed-processes", type=int, default=4)
+    group.add("--wet-path", type=path, default=None,
+               help="word embedding translation model path")
 
     group = parser.add_argument_group("Model Parameters")
     group.add("--encoder-cell", type=str, default="gru",
@@ -73,6 +78,30 @@ class EmbedDict(object):
 
     def query(self, word):
         return self.embeddings.get(word)
+
+
+class WordEmbeddingTranslatorWrapper(object):
+    def __init__(self, we, wet):
+        self.we = we
+        self.wet = wet
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+    def query(self, word):
+        e = self.we.query(word)
+
+        if e is None:
+            return None
+
+        e = Variable(torch.Tensor(e).unsqueeze(0))
+        e = self.wet(e)
+        e = e.data.squeeze(0).numpy()
+
+        return e
 
 
 def file_reader(data_path):
@@ -212,17 +241,13 @@ class EmbeddingBatchPreprocessor(BatchPreprocessor):
             words_embed = []
 
             for w in words:
-                if w in self.vocab.f2i:
-                    index = self.vocab.f2i[w]
-                    words_embed.append(self.embeddings[index])
-                else:
-                    vector = self.wordembed.query(w)
+                vector = self.wordembed.query(w)
 
-                    if vector is None:
-                        words_embed.append(self.embeddings[self.unk_idx])
-                    else:
-                        vector = torch.Tensor(vector)
-                        words_embed.append(vector)
+                if vector is None:
+                    words_embed.append(self.embeddings[self.unk_idx])
+                else:
+                    vector = torch.Tensor(vector)
+                    words_embed.append(vector)
 
             sent = torch.stack(words_embed)
             batch_new.append(sent)
@@ -261,11 +286,11 @@ def main():
     if args.vector_path is not None:
         ensure_dir_exists(args.vector_path)
 
-    logging.info("Loading vocabulary...")
+    logging.info("loading vocabulary...")
     with open(args.vocab_path, "rb") as f:
         vocab = pickle.load(f)
 
-    logging.info("Loading model...")
+    logging.info("loading models...")
     model_cls = MultiContextSkipThoughts
     model = model_cls(vocab, args.word_dim, args.hidden_dim,
                       encoder_cell=args.encoder_cell,
@@ -280,13 +305,23 @@ def main():
     logging.info("Loading word embeddings...")
     we_type = args.wordembed_type
 
-    logging.info("Preparing vectorizing environment...")
-    vectorizer = Vectorizer(model,
-                            use_gpu=args.gpu)
-
     if we_type is not None:
+        assert args.wet_path is not None, "word embedding translation " \
+                                          "model path cannot be null when" \
+                                          "word embedding type is not None"
+
+        assert args.wordembed_processes >= 1, "number of processes must be " \
+                                              "larger than or equal to 1"
+
+        if args.wordembed_processes == 1:
+            embedding_loader = load_embeddings
+        else:
+            def embedding_loader(path, word_dim):
+                return load_embeddings_mp(path, word_dim,
+                                          processes=args.wordembed_processes)
+
         if we_type == "glove":
-            embeddings = load_embeddings(args.wordembed_path, args.word_dim)
+            embeddings = embedding_loader(args.wordembed_path, args.word_dim)
             we = EmbedDict(embeddings)
         elif we_type == "fasttext":
             we = FastText(args.fasttext_path, args.wordembed_path)
@@ -295,15 +330,24 @@ def main():
                 we_type
             ))
 
+        wet = WordEmbeddingTranslator(args.word_dim)
+        wet.load_state_dict(torch.load(args.wet_path))
+        we_wrap = WordEmbeddingTranslatorWrapper(we, wet)
+
         preprocessor = EmbeddingBatchPreprocessor(
             model=model,
-            we=we,
+            we=we_wrap,
             vocab=vocab
         )
     else:
         preprocessor = BatchPreprocessor(
             vocab=vocab,
         )
+
+
+    logging.info("Preparing vectorizing environment...")
+    vectorizer = Vectorizer(model,
+                            use_gpu=args.gpu)
 
     reader = file_reader(args.data_path)
     data_generator = create_generator_ae(reader,

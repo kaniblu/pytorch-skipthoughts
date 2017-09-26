@@ -385,7 +385,7 @@ class Trainer(object):
     def save(self, filename):
         path = os.path.join(self.save_dir, filename)
         torch.save(self.model.state_dict(), path)
-        viz.save([self.save_dir])
+        self.logger.save(self.save_dir)
 
     def train(self):
         optimizer = O.Adam([p for p in self.model.parameters()
@@ -495,6 +495,9 @@ class TrainLogger(object):
     def add_text(self, name, text):
         raise NotImplementedError()
 
+    def save(self, save_dir):
+        raise NotImplementedError()
+
 
 class TensorboardTrainLogger(TrainLogger):
     def __init__(self, log_dir):
@@ -509,6 +512,9 @@ class TensorboardTrainLogger(TrainLogger):
             self.writer.add_scalar(name, value, self.next())
 
     def add_text(self, name, text):
+        pass
+
+    def save(self, save_dir):
         pass
 
 
@@ -536,12 +542,18 @@ class VisdomTrainLogger(TrainLogger):
             )
         )))
 
+    def save(self, save_dir):
+        viz.save([save_dir])
+
 
 class DummyTrainLogger(TrainLogger):
     def add_loss(self, prefix, **losses):
         pass
 
     def add_text(self, name, text):
+        pass
+
+    def save(self, save_dir):
         pass
 
 

@@ -10,8 +10,8 @@ the memory footprint low by reading data from the disk.
 
 ### Visualization ###
 
-This library uses either `visdom` (https://github.com/facebookresearch/visdom) or
-`tensorboard` (https://github.com/dmlc/tensorboard) as the backend visualization tool. 
+This library uses either [`visdom`](https://github.com/facebookresearch/visdom) or
+[`tensorboard`](ttps://github.com/dmlc/tensorboard) as the backend visualization tool. 
 Details of using the libraries could be checked on each of the sites.
 
 ### Libraries ####
@@ -35,20 +35,20 @@ The package is also availble from pypi.
 
     `python -m visdom.server`
     
-or
+    or
 
-    `tensorboard --logdir=$SAVE_DIR
+    `tensorboard --logdir=$SAVE_DIR`
     
-If you are using tensorboard as the backend, the directory where you save checkpoints
-(`save-dir` option) must be specified, as that's where summaries are written.
+    If you are using tensorboard as the backend, the directory where you save checkpoints
+    (`save-dir` option) must be specified, as that's where summaries are written.
 
 2. Prepare a corpus in the same format as the Toronto Book Corpus (words tokenizable
-by spaces, sentences separated by new lines). Then create a vocabulary file by executing
+   by spaces, sentences separated by new lines). Then create a vocabulary file by executing
 
     `python -m torchtextutils.vocab --data_dir $CORPUS_PATH --vocab_path $VOCAB_PATH --cutoff 20000`
     
-`cutoff` specified the number of top occurring words to leave in the vocabulary set.
-In R. Kiros' paper, `20000` was the cutoff threshold.
+    `cutoff` specifies the number of top occurring words to leave in the vocabulary set.
+    In R. Kiros' paper, `20000` was the cutoff threshold.
 
 3. Create a configuration file for training. Available options are listed in `python train.py --help`. An example configuration file is listed under examples. Many skip-thoughts model options are available, including:
 
@@ -61,15 +61,15 @@ In R. Kiros' paper, `20000` was the cutoff threshold.
     - `dropout-prob`
     - `conditional-decoding`: whether to feed last encoder state to every time step of decoder(s)
 
-YAML and JSON are all supported.
+    Both YAML and JSON are all supported.
 
 4. After carefully designing an experimental setup, start training by specifying the configuration file to `train.py`.
-You must have the library installed for module-wise use. 
+    You must have the library installed for module-wise use. 
 
     `python -m torchst.train --config $CONFIG_PATH`
     
 5. Get live results from the visualization server. Models are saved to `save-dir` and 
-can be used for converting sentences to vectors.
+    can be used for converting sentences to vectors.
 
 ## Inference ##
 

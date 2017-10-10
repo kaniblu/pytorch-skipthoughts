@@ -78,13 +78,15 @@ def parse_args():
               choices=["lstm", "gru", "sru"])
     group.add("--decoder-cell", type=str, default="gru",
               choices=["lstm", "gru", "sru"])
+    group.add("--conditional-decoding", action="store_true", default=False)
     group.add("--before", type=int, default=1)
     group.add("--after", type=int, default=1)
     group.add("--predict-self", action="store_true", default=False)
     group.add("--word-dim", type=int, default=100)
     group.add("--hidden-dim", type=int, default=100)
     group.add("--layers", type=int, default=2)
-    group.add("--bidirectional", action="store_true", default=False)
+    group.add("--encoder-direction", default="bi",
+              choices=["uni", "bi", "combine"])
     group.add("--dropout-prob", type=float, default=0.05)
 
     args = parser.parse_args()
@@ -265,14 +267,15 @@ class Trainer(object):
             cdata = [d.transpose(1, 0).contiguous() for d in cdata]
             ys_t, ys_lens, dec_logits = cdata
 
-        losses = []
+        losses_b = []
+        losses_s = []
 
         for logits, y, lens in zip(dec_logits, ys_t, ys_lens):
-            loss = compute_loss(logits, y, lens)
-            losses.append(loss)
+            loss_batch, loss_step = compute_loss(logits, y, lens)
+            losses_b.append(loss_batch)
+            losses_s.append(loss_step)
 
-        loss = sum(losses) / len(losses)
-        return loss, losses
+        return losses_b, losses_s
 
     def val_text(self, x_sents, yi_sents, yt_sents, o_sents):
         text = ""
@@ -351,36 +354,37 @@ class Trainer(object):
         inputs = (x, x_lens, ys_i, ys_lens, xys_idx)
         dec_logits, h = self.forward(inputs)
         merged_data = self.merge_batches(processed_data)
-        loss, losses = self.calculate_loss(merged_data, dec_logits)
-        losses_val = [l.data[0] for l in losses]
-        loss_val = loss.data[0]
+        losses_batch, losses_step = self.calculate_loss(merged_data, dec_logits)
+        losses_step_val = [l.data[0] for l in losses_step]
+        loss_step = (sum(losses_step) / len(losses_step))
+        loss_batch = sum(losses_batch) / len(losses_batch)
 
         plot_X = [step] * (self.model.n_decoders + 1)
-        plot_Y = [loss_val] + losses_val
+        plot_Y = [loss_step.data[0]] + losses_step_val
 
         self.logger.add_loss(title, **{
             t: p for t, p in zip(self.legend, plot_Y)
         })
 
-        return merged_data, dec_logits, loss
+        return merged_data, dec_logits, loss_batch, loss_step
 
     def step_val(self, step, batch_data):
-        data, dec_logits, loss = self.step(step, batch_data,
-                                           volatile=True,
-                                           title="Validation Loss")
+        data, dec_logits, loss_b, loss_s = self.step(step, batch_data,
+                                                     volatile=True,
+                                                     title="Validation Loss")
         sents = self.val_sents(data, dec_logits)
         text = self.val_text(*sents)
 
         self.logger.add_text("Validation Examples", text)
 
-        return loss
+        return loss_b, loss_s
 
     def step_train(self, step, batch_data):
-        data, dec_logits, loss = self.step(step, batch_data,
-                                           volatile=False,
-                                           title="Training Loss")
+        data, dec_logits, loss_b, loss_s = self.step(step, batch_data,
+                                                     volatile=False,
+                                                     title="Training Loss")
 
-        return loss
+        return loss_b, loss_s
 
     def save(self, filename):
         path = os.path.join(self.save_dir, filename)
@@ -397,19 +401,18 @@ class Trainer(object):
             for data in self.data_generator:
                 step += 1
 
-                self.model.zero_grad()
                 optimizer.zero_grad()
 
                 if step % self.val_period == 0:
-                    loss = self.step_val(step, data)
+                    loss_b, loss_s = self.step_val(step, data)
                 else:
-                    loss = self.step_train(step, data)
+                    loss_b, loss_s = self.step_train(step, data)
 
-                    loss.backward()
-                    clip_grad_norm(self.model.parameters(), 3)
+                    loss_b.backward()
+                    clip_grad_norm(self.model.parameters(), 10)
                     optimizer.step()
 
-                loss_val = loss.data[0]
+                loss_val = loss_s.data[0]
 
                 if step % self.save_period == 0:
                     filename = "model-e{}-s{}-{:.4f}".format(
@@ -582,9 +585,10 @@ def main():
                       decoder_cell=args.decoder_cell,
                       n_decoders=n_decoders,
                       n_layers=args.layers,
-                      bidirectional=args.bidirectional,
                       dropout_prob=args.dropout_prob,
-                      batch_first=args.batch_first)
+                      batch_first=args.batch_first,
+                      conditional_decoding=args.conditional_decoding,
+                      encoder_direction=args.encoder_direction)
 
     model.reset_parameters()
     n_params = count_parameters(model)

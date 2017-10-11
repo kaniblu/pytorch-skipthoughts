@@ -58,7 +58,8 @@ def parse_args():
     group.add("--word-dim", type=int, default=100)
     group.add("--hidden-dim", type=int, default=100)
     group.add("--layers", type=int, default=2)
-    group.add("--bidirectional", action="store_true", default=False)
+    group.add("--encoder-direction", default="bi",
+              choices=["uni", "bi", "combine"])
     group.add("--reverse-encoder", action="store_true", default=False)
 
     args = parser.parse_args()
@@ -297,7 +298,8 @@ def main():
                       decoder_cell=args.decoder_cell,
                       n_decoders=n_decoders,
                       n_layers=args.layers,
-                      bidirectional=args.bidirectional,
+                      encoder_direction=args.encoder_direction,
+                      conditional_decoding=False, # irrelevant if encoding-only
                       reverse_encoder=args.reverse_encoder,
                       batch_first=True)
     model.load_state_dict(torch.load(args.ckpt_path))

@@ -52,6 +52,7 @@ def parse_args():
               choices=["lstm", "gru", "sru"])
     group.add("--decoder-cell", type=str, default="gru",
               choices=["lstm", "gru", "sru"])
+    group.add("--conditional-decoding", action="store_true", default=False)
     group.add("--before", type=int, default=1)
     group.add("--after", type=int, default=1)
     group.add("--predict-self", action="store_true", default=False)
@@ -299,7 +300,7 @@ def main():
                       n_decoders=n_decoders,
                       n_layers=args.layers,
                       encoder_direction=args.encoder_direction,
-                      conditional_decoding=False, # irrelevant if encoding-only
+                      conditional_decoding=args.conditional_decoding,
                       reverse_encoder=args.reverse_encoder,
                       batch_first=True)
     model.load_state_dict(torch.load(args.ckpt_path))

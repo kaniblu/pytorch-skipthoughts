@@ -17,11 +17,9 @@ from torchtextutils import DirectoryReader
 from torchtextutils import OmissionNoisifier
 from torchtextutils import SwapNoisifier
 from torchtextutils import create_generator_st
-from visdom_pooled import Visdom
 from yaap import ArgParser
 from yaap import path
 from configargparse import YAMLConfigFileParser
-from tensorboard import SummaryWriter
 
 from .model import MultiContextSkipThoughts
 from .model import compute_loss
@@ -630,8 +628,10 @@ def main():
     if args.visualizer is None:
         logger = DummyTrainLogger()
     elif args.visualizer == "tensorboard":
+        from tensorboard import SummaryWriter
         logger = TensorboardTrainLogger(save_dir)
     elif args.visualizer == "visdom":
+        from visdom_pooled import Visdom
         viz_pool = mp.ThreadPool(1, initializer=init_viz, initargs=(tuple(), dict(
             buffer_size=args.visdom_buffer_size,
             server="http://{}".format(args.visdom_host),

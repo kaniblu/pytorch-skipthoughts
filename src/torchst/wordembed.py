@@ -9,6 +9,7 @@ import multiprocessing.pool as mp
 import torch
 import torch.nn as nn
 import torch.optim as O
+import torch.nn.functional as F
 from torch.autograd import Variable
 from torchtextutils import Vocabulary
 import numpy as np
@@ -156,26 +157,35 @@ class WordEmbeddingTranslator(nn.Module):
 
         return self.W(src)
 
-    def loss(self, src, target):
-        o = self.forward(src)
+
+class WordEmbeddingTranslatorTrainer(object):
+    def __init__(self, model, data_generator, epochs, loss):
+        self.epochs = epochs
+        self.model = model
+        self.data_generator = data_generator
+        self.loss = loss
+
+        if loss == "smoothl1":
+            self.loss_fn = F.smooth_l1_loss
+        elif loss == "l1":
+            self.loss_fn = nn.L1Loss()
+        elif loss == "l2":
+            self.loss_fn = nn.MSELoss()
+        else:
+            raise ValueError("Unrecognized loss type: {}".format(loss))
+
+    def run_loss(self, src, target):
+        o = self.model(src)
         batch_size, word_dim = src.size()
         batch_size_t, word_dim_t = target.size()
 
         assert batch_size == batch_size_t, "batch sizes must be equal"
-        assert word_dim == word_dim_t == self.word_dim, \
+        assert word_dim == word_dim_t == self.model.word_dim, \
             "word dimensions must be equal"
 
-        d = (o + (-1) * target) ** 2
-        loss = d.mean()
+        loss = self.loss_fn(o, target)
 
         return loss
-
-
-class WordEmbeddingTranslatorTrainer(object):
-    def __init__(self, model, data_generator, epochs):
-        self.epochs = epochs
-        self.model = model
-        self.data_generator = data_generator
 
     def train(self):
         optimizer = O.Adam(self.model.parameters())
@@ -188,7 +198,7 @@ class WordEmbeddingTranslatorTrainer(object):
                     y = y.cuda()
 
                 optimizer.zero_grad()
-                loss = self.model.loss(x, y)
+                loss = self.run_loss(x, y)
                 loss.backward()
                 optimizer.step()
 
@@ -322,6 +332,8 @@ def train():
     group = parser.add_group("Training Options")
     group.add_argument("--epochs", type=int, default=10)
     group.add_argument("--batch-size", type=int, default=32)
+    group.add_argument("--loss", type=str, default="smoothl1",
+                       choices=["smoothl1", "l2", "l1"])
     group.add_argument("--gpu", action="store_true", default=False)
     group.add_argument("--no-shuffle", action="store_true", default=False)
 
@@ -380,7 +392,8 @@ def train():
     )
     model = WordEmbeddingTranslator(word_dim)
     trainer = WordEmbeddingTranslatorTrainer(model, data_generator,
-                                             epochs=args.epochs)
+                                             epochs=args.epochs,
+                                             loss=args.loss)
 
     logging.info("beginning training...")
     trainer.train()

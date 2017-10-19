@@ -332,6 +332,8 @@ def train():
     group = parser.add_group("Training Options")
     group.add_argument("--epochs", type=int, default=10)
     group.add_argument("--batch-size", type=int, default=32)
+    group.add_argument("--method", type=str, default="pytorch",
+                       choices=["pytorch", "sklearn"])
     group.add_argument("--loss", type=str, default="smoothl1",
                        choices=["smoothl1", "l2", "l1"])
     group.add_argument("--gpu", action="store_true", default=False)
@@ -386,20 +388,39 @@ def train():
     src_we, target_we = join_embeddings(src_embeddings, target_we)
 
     logging.info("preparing training environment...")
-    data_generator = WordEmbeddingTranslationGenerator(
-        src=src_we, target=target_we, shuffle=not args.no_shuffle,
-        batch_size=args.batch_size
-    )
-    model = WordEmbeddingTranslator(word_dim)
-    trainer = WordEmbeddingTranslatorTrainer(model, data_generator,
-                                             epochs=args.epochs,
-                                             loss=args.loss)
+    if args.method == "sklearn":
+        from sklearn.linear_model import LinearRegression
+
+        model = LinearRegression(n_jobs=7)
+    elif args.method == "pytorch":
+        model = WordEmbeddingTranslator(word_dim)
+    else:
+        assert False
 
     logging.info("beginning training...")
-    trainer.train()
+    if args.method == "sklearn":
+        src_we = src_we.numpy()
+        target_we = target_we.numpy()
+        model.fit(src_we, target_we)
+    elif args.method == "pytorch":
+        data_generator = WordEmbeddingTranslationGenerator(
+            src=src_we, target=target_we, shuffle=not args.no_shuffle,
+            batch_size=args.batch_size
+        )
+        trainer = WordEmbeddingTranslatorTrainer(
+            model=model, data_generator=data_generator,
+            epochs=args.epochs,
+            loss=args.loss
+        )
+        trainer.train()
+    else:
+        assert False
 
     logging.info("saving results...")
-    torch.save(model.state_dict(), args.save_path)
+    if args.method == "sklearn":
+        pickle.dump(model, open(args.save_path, "wb"))
+    elif args.method == "pytorch":
+        torch.save(model.state_dict(), args.save_path)
 
     logging.info("done!")
 

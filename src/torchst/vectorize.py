@@ -46,6 +46,8 @@ def parse_args():
     group.add("--wordembed-processes", type=int, default=4)
     group.add("--wet-path", type=path, default=None,
                help="word embedding translation model path")
+    group.add("--wet-type", type=str, default="pytorch",
+              choices=["pytorch", "sklearn"])
 
     group = parser.add_argument_group("Model Parameters")
     group.add("--encoder-cell", type=str, default="gru",
@@ -87,6 +89,11 @@ class WordEmbeddingTranslatorWrapper(object):
         self.we = we
         self.wet = wet
 
+        if isinstance(self.wet, WordEmbeddingTranslator):
+            self.wet_type = "pytorch"
+        else:
+            self.wet_type = "sklearn"
+
     def __enter__(self):
         return self
 
@@ -99,9 +106,14 @@ class WordEmbeddingTranslatorWrapper(object):
         if e is None:
             return None
 
-        e = Variable(torch.Tensor(e).unsqueeze(0))
-        e = self.wet(e)
-        e = e.data.squeeze(0).numpy()
+        if self.wet_type == "pytorch":
+            e = Variable(torch.Tensor(e).unsqueeze(0))
+            e = self.wet(e)
+            e = e.data.squeeze(0).numpy()
+        elif self.wet_type == "sklearn":
+            e = self.wet.predict([e])[0]
+        else:
+            assert False
 
         return e
 
@@ -333,8 +345,16 @@ def main():
                 we_type
             ))
 
-        wet = WordEmbeddingTranslator(args.word_dim)
-        wet.load_state_dict(torch.load(args.wet_path))
+        if args.wet_type == "sklearn":
+            from sklearn.linear_model import LinearRegression
+
+            wet = pickle.load(open(args.wet_path, "rb"))
+        elif args.wet_type == "pytorch":
+            wet = WordEmbeddingTranslator(args.word_dim)
+            wet.load_state_dict(torch.load(args.wet_path))
+        else:
+            assert False
+
         we_wrap = WordEmbeddingTranslatorWrapper(we, wet)
 
         preprocessor = EmbeddingBatchPreprocessor(

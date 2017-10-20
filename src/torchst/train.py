@@ -46,6 +46,8 @@ def parse_args():
                     "it is impossible to operate without batch-first data")
     parser.add("--visualizer", type=str, default=None,
                choices=["visdom", "tensorboard"])
+    parser.add("--ckpt-name", type=str, default="model-e{epoch}-s{iter}-{loss}")
+    parser.add("-v", "--verbose", action="store_true", default=False)
 
     group = parser.add_group("Word Embedding Options")
     group.add("--wordembed-type", type=str, default="none",
@@ -149,7 +151,7 @@ class DataGenerator(object):
 
 class Trainer(object):
     def __init__(self, model, gpu_devices, data_generator, n_epochs,
-                 logger, save_dir, save_period, val_period, previews,
+                 logger, save_dir, save_period, val_period, previews, ckpt_format,
                  batch_first=True):
         self.model = model
         self.gpu_devices = gpu_devices
@@ -160,6 +162,7 @@ class Trainer(object):
         self.save_period = save_period
         self.val_period = val_period
         self.previews = previews
+        self.ckpt_format = ckpt_format
         self.batch_first = batch_first
         self.legend = ["average"] + ["decoder_{}".format(i)
                                      for i in range(self.model.n_decoders)]
@@ -413,8 +416,10 @@ class Trainer(object):
                 loss_val = loss_s.data[0]
 
                 if step % self.save_period == 0:
-                    filename = "model-e{}-s{}-{:.4f}".format(
-                        epoch, step, loss_val
+                    filename = self.ckpt_format.format(
+                        epoch="{:02d}".format(epoch),
+                        step="{:07d}".format(step),
+                        loss="{:.4f}".format(loss_val)
                     )
                     self.save(filename)
 
@@ -505,12 +510,15 @@ class TensorboardTrainLogger(TrainLogger):
         super(TensorboardTrainLogger, self).__init__()
 
         self.log_dir = log_dir
-        self.writer = SummaryWriter(log_dir)
+        self.writers = {}
 
     def add_loss(self, prefix, **losses):
         for name, value in losses.items():
-            name = "{}-{}".format(prefix, name)
-            self.writer.add_scalar(name, value, self.next())
+            if name not in self.writers:
+                dir = os.path.join(self.log_dir, name)
+                self.writers[name] = SummaryWriter(dir)
+
+            self.writers[name].add_scalar(prefix, value, self.next())
 
     def add_text(self, name, text):
         pass
@@ -560,6 +568,14 @@ class DummyTrainLogger(TrainLogger):
 
 def main():
     args = parse_args()
+
+    if args.verbose:
+        loglvl = logging.INFO
+    else:
+        loglvl = logging.CRITICAL
+
+    logging.basicConfig(level=loglvl)
+
     n_decoders = args.before + args.after + (1 if args.predict_self else 0)
 
     assert os.path.exists(args.vocab_path)
@@ -673,6 +689,7 @@ def main():
         gpu_devices=args.gpus,
         data_generator=data_generator,
         n_epochs=args.epochs,
+        ckpt_format=args.ckpt_name,
         logger=logger,
         save_dir=save_dir,
         save_period=args.save_period,

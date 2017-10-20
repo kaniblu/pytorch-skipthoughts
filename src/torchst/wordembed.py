@@ -328,6 +328,7 @@ def train():
     parser.add("--fasttext-path", type=yaap.path, default=None,
                help="Path to FastText binary.")
     parser.add("--wordembed-processes", type=int, default=1)
+    parser.add("-v", "--verbose", action="store_true", default=False)
 
     group = parser.add_group("Training Options")
     group.add_argument("--epochs", type=int, default=10)
@@ -341,6 +342,12 @@ def train():
 
     args = parser.parse_args()
 
+    if args.verbose:
+        loglvl = logging.INFO
+    else:
+        loglvl = logging.CRITICAL
+
+    logging.basicConfig(level=loglvl)
     logging.info("initializing...")
 
     word_dim = args.word_dim

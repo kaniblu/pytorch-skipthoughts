@@ -37,6 +37,7 @@ def parse_args():
     parser.add("--gpu", action="store_true", default=False)
     parser.add("--verbose", action="store_true", default=False)
     parser.add("--flush_char", type=str, default=chr(0x05))
+    parser.add("-v", "--verbose", action="store_true", default=False)
 
     group = parser.add_argument_group("Word Expansion Options")
     group.add("--wordembed-type", type=str, default=None,
@@ -292,6 +293,14 @@ def create_generator_ae(sents, batch_size, preprocessor,
 
 def main():
     args = parse_args()
+
+    if args.verbose:
+        loglvl = logging.INFO
+    else:
+        loglvl = logging.CRITICAL
+
+    logging.basicConfig(level=loglvl)
+
     n_decoders = args.before + args.after + (1 if args.predict_self else 0)
 
     if not args.verbose:
